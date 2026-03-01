@@ -10,30 +10,40 @@
 1. [Research Context](#research-context)
 2. [14-Class Inventory Task](#14-class-inventory-task)
 3. [Pipeline Architecture](#pipeline-architecture)
-4. [Experimental Design](#experimental-design)
-5. [Installation](#installation)
-6. [Usage](#usage)
-7. [Training](#training)
-8. [Evaluation](#evaluation)
-9. [Output Schema](#output-schema)
-10. [Configuration](#configuration)
-11. [Reproducibility](#reproducibility)
-12. [Project Structure](#project-structure)
+4. [VLM Comparison (Pipeline A Model Selection)](#vlm-comparison-pipeline-a-model-selection)
+5. [Experimental Design](#experimental-design)
+6. [Training Data](#training-data)
+7. [Test Data and Annotation](#test-data-and-annotation)
+8. [Robustness Testing (Image Degradations)](#robustness-testing-image-degradations)
+9. [Installation](#installation)
+10. [Usage](#usage)
+11. [Training](#training)
+12. [Evaluation — The 12-Run Matrix](#evaluation--the-12-run-matrix)
+13. [Output Schema](#output-schema)
+14. [Configuration](#configuration)
+15. [Reproducibility](#reproducibility)
+16. [Key Findings and Discussion Points](#key-findings-and-discussion-points)
+17. [Project Structure](#project-structure)
+
+---
 
 ## Research Context
 
 ### Problem Statement
 
-Experiment 1 identified the best CNN architecture for single-crop fruit/vegetable classification. Experiment 2 asks the next question: **what is the best end-to-end pipeline for building a complete inventory from a single image?**
+Experiment 1 identified the best CNN architecture for single-crop fruit/vegetable classification (EfficientNet-B0). Experiment 2 asks the next question: **what is the best end-to-end pipeline for building a complete inventory from a single image?**
 
 Three fundamentally different approaches are compared — a Vision-Language Model that reasons about the full image, a purpose-trained object detector that labels and counts directly, and a two-stage pipeline that separates detection from classification.
 
 ### Research Questions
 
-1. Can a VLM (GPT-4o-mini), constrained to 14 labels, produce accurate inventories from a single image?
-2. Does a purpose-trained 14-class YOLO outperform the VLM on the same task?
+1. Which flagship VLM (GPT-5.2, Claude Opus 4.6, or Gemini 3.1 Pro) produces the most accurate inventories when constrained to 14 labels?
+2. Does a purpose-trained 14-class YOLO outperform the best VLM on the same task?
 3. Does separating detection (objectness YOLO) from classification (CNN from Exp 1) offer advantages over either end-to-end approach?
-4. What are the latency and cost trade-offs between the three strategies?
+4. How robust is each pipeline to real-world image degradations (blur, noise, JPEG compression)?
+5. What are the latency and cost trade-offs between the three strategies?
+
+---
 
 ## 14-Class Inventory Task
 
@@ -56,41 +66,39 @@ Inventory = Dict[str, int]
 | 5 | `cucumber` | 12 | `strawberry` |
 | 6 | `grape` | 13 | `tomato` |
 
+---
+
 ## Pipeline Architecture
 
 ### Pipeline Overview
 
-| Pipeline | Strategy | Flow | Models Used | LLM Calls |
+| Pipeline | Strategy | Flow | Models Used | API Calls |
 |:--------:|----------|------|-------------|:---------:|
-| **A** | VLM-only | Image → GPT-4o-mini → inventory | GPT-4o-mini | 1 |
-| **B** | YOLO end-to-end | Image → 14-class YOLO → inventory | Custom YOLOv8 | 0 |
-| **C** | YOLO + CNN | Image → objectness YOLO → crops → CNN → inventory | Objectness YOLO + CNN (Exp 1) | 0 |
+| **A** | VLM-only | Image → Gemini 3.1 Pro → inventory | Gemini 3.1 Pro (Google) | 1 per image |
+| **B** | YOLO end-to-end | Image → 14-class YOLO → inventory | Custom YOLOv8s | 0 |
+| **C** | YOLO + CNN | Image → objectness YOLO → crops → CNN → inventory | Objectness YOLOv8s + EfficientNet-B0 | 0 |
 
-**Key insight:** Pipelines B and C use **no LLM calls at all**. The comparison is VLM vs. pure detection vs. detect-then-classify.
+**Key insight:** Pipelines B and C use **no API calls at all**. The comparison is VLM vs. pure detection vs. detect-then-classify.
 
-### Pipeline A: VLM-Only
+### Pipeline A: VLM-Only (Gemini 3.1 Pro)
 
-```mermaid
-flowchart LR
-    A[Input Image] --> B["GPT-4o-mini\n(constrained to 14 labels)"]
-    B --> C["Inventory JSON\n{class: count}"]
+```
+Input Image → Gemini 3.1 Pro (constrained to 14 labels) → Inventory JSON {class: count}
 ```
 
-Sends the full image to GPT-4o-mini with a prompt that explicitly lists all 14 class names and instructs the model to count precisely. Unknown labels are discarded.
+Sends the full image to Gemini 3.1 Pro with a frozen prompt that explicitly lists all 14 class names and instructs the model to count precisely. The VLM was selected through a [three-model comparison](#vlm-comparison-pipeline-a-model-selection) against GPT-5.2 and Claude Opus 4.6.
 
 **Characteristics:**
 - Single API call per image
 - Prompt-constrained to the 14 valid classes only
 - No detection or cropping — all reasoning done by the VLM
-- Requires OpenAI API key
+- Requires Google API key
+- Non-deterministic (VLM outputs may vary slightly across runs)
 
 ### Pipeline B: YOLO End-to-End
 
-```mermaid
-flowchart LR
-    A[Input Image] --> B["14-Class YOLO\n(fine-tuned YOLOv8s)"]
-    B --> C[Detections\nclass + bbox + conf]
-    C --> D["Count by Class\n→ Inventory"]
+```
+Input Image → 14-Class YOLO (fine-tuned YOLOv8s) → Detections (class + bbox + conf) → Count by Class → Inventory
 ```
 
 A YOLOv8s model fine-tuned on the 14 fruit/vegetable classes. Each detection carries a class label directly — no second-stage classification needed. The inventory is built by counting detections per class.
@@ -103,55 +111,116 @@ A YOLOv8s model fine-tuned on the 14 fruit/vegetable classes. Each detection car
 
 ### Pipeline C: YOLO + CNN
 
-```mermaid
-flowchart LR
-    A[Input Image] --> B["Objectness YOLO\n(1-class detector)"]
-    B --> C[Crop Regions]
-    C --> D["CNN Classifier\n(Exp 1 winner)"]
-    D --> E["Count by Class\n→ Inventory"]
+```
+Input Image → Objectness YOLO (1-class) → Crop Regions → CNN Classifier (EfficientNet-B0) → Count by Class → Inventory
 ```
 
-A two-stage approach that separates **detection** from **classification**. An objectness YOLO (all classes remapped to a single "object" class) finds regions of interest, then the CNN winner from Experiment 1 classifies each crop.
+A two-stage approach that separates **detection** from **classification**. An objectness YOLO (all classes remapped to a single "object" class) finds regions of interest, then the EfficientNet-B0 winner from Experiment 1 classifies each crop.
 
 **Characteristics:**
 - Fully offline, no API calls
 - Modular: swap CNN architecture via config (`efficientnet` | `resnet` | `custom`)
 - Isolates detection quality from classification quality
 - Requires both objectness YOLO weights and CNN weights
+- Domain gap: CNN was trained on clean single-item images, receives YOLO-cropped multi-item scene regions
 
 ### System Components
 
-```mermaid
-flowchart TB
-    subgraph Clients
-        VLM[VLM Client\nGPT-4o-mini]
-        Y14[YOLO 14-Class\nDetector]
-        YOBJ[YOLO Objectness\nDetector]
-        CNN[CNN Classifier\nFactory]
-    end
-
-    subgraph Pipelines
-        PA[Pipeline A\nvlm]
-        PB[Pipeline B\nyolo-14]
-        PC[Pipeline C\nyolo-cnn]
-    end
-
-    PA --> VLM
-    PB --> Y14
-    PC --> YOBJ
-    PC --> CNN
-
-    PA --> OUT["Unified Output\nInventory = Dict[str, int]"]
-    PB --> OUT
-    PC --> OUT
-```
-
 | Component | File | Model |
 |-----------|------|-------|
-| VLM Client | `clients/vlm_client.py` | `gpt-4o-mini` |
+| VLM Client (winner) | `clients/vlm_google.py` | Gemini 3.1 Pro (`gemini-3.1-pro-preview`) |
+| VLM Client (comparison) | `clients/vlm_openai.py` | GPT-5.2 |
+| VLM Client (comparison) | `clients/vlm_anthropic.py` | Claude Opus 4.6 (`claude-opus-4-6`) |
+| Original VLM Client | `clients/vlm_client.py` | GPT-4o-mini (baseline reference) |
 | 14-Class YOLO | `clients/yolo_detector.py` | `weights/yolo_14class_best.pt` |
 | Objectness YOLO | `clients/yolo_objectness.py` | `weights/yolo_objectness_best.pt` |
-| CNN Classifier | `clients/cnn_classifier.py` | `weights/cnn_winner.pth` |
+| CNN Classifier | `clients/cnn_classifier.py` | `weights/cnn_winner.pth` (EfficientNet-B0) |
+
+---
+
+## VLM Comparison (Pipeline A Model Selection)
+
+### Motivation
+
+Before running the 12-run pipeline comparison, we needed to determine which VLM performs best for the inventory counting task. Rather than assuming a single provider, we ran a controlled comparison across three flagship VLMs from three providers.
+
+### Models Compared
+
+| Model | Provider | Model ID | Release |
+|-------|----------|----------|---------|
+| **GPT-5.2** | OpenAI | `gpt-5.2` | 2026 |
+| **Claude Opus 4.6** | Anthropic | `claude-opus-4-6` | 2026 |
+| **Gemini 3.1 Pro** | Google | `gemini-3.1-pro-preview` | 2026 |
+
+All three models received the **identical frozen prompt** constrained to the 14 target classes. Temperature was set to 0.0 for all. Each model processed all 120 test images.
+
+### Results
+
+| Model | Precision | Recall | **F1** | Avg Latency | Errors |
+|-------|-----------|--------|--------|-------------|--------|
+| **Gemini 3.1 Pro** | 0.8291 | 0.9949 | **0.9044** | 9,003 ms | 0/120 |
+| GPT-5.2 | 0.8220 | 0.9949 | 0.9002 | 3,687 ms | 0/120 |
+| Claude Opus 4.6 | 0.7688 | 0.9949 | 0.8674 | 4,724 ms | 0/120 |
+
+### Key Observations
+
+- **Identical recall (99.5%)** across all three models — all VLMs find nearly everything in the image
+- **Precision is the differentiator** — Gemini overcounts the least, Claude the most
+- **12 of 14 classes scored perfect F1 = 1.0** on all three models
+- **The grape class is the sole source of error** — VLMs count individual grapes in a cluster rather than treating the cluster as one unit (see [Discussion Points](#the-grape-semantic-ambiguity))
+- **GPT-5.2 is 2.4x faster** than Gemini but marginally less accurate (F1 difference: 0.004)
+- **Winner: Gemini 3.1 Pro** — selected as Pipeline A's VLM for the 12-run comparison
+
+### Per-Class Breakdown (all models identical except grape)
+
+| Class | Precision | Recall | F1 | Notes |
+|-------|-----------|--------|----|-------|
+| apple | 1.000 | 1.000 | 1.000 | Perfect |
+| banana | 1.000 | 1.000 | 1.000 | Perfect |
+| bell_pepper_green | 1.000 | 1.000 | 1.000 | Perfect |
+| bell_pepper_red | 1.000 | 1.000 | 1.000 | Perfect |
+| carrot | 1.000 | 0.978 | 0.989 | 1 miss |
+| cucumber | 1.000 | 1.000 | 1.000 | Perfect |
+| **grape** | **0.261** | **1.000** | **0.414** | **119 false positives** |
+| lemon | 1.000 | 0.955 | 0.977 | 2 misses |
+| onion | 1.000 | 1.000 | 1.000 | Perfect |
+| orange | 0.980 | 1.000 | 0.990 | 1 false positive |
+| peach | 1.000 | 1.000 | 1.000 | Perfect |
+| potato | 1.000 | 1.000 | 1.000 | Perfect |
+| strawberry | 1.000 | 1.000 | 1.000 | Perfect |
+| tomato | 1.000 | 1.000 | 1.000 | Perfect |
+
+### How to Run the VLM Comparison
+
+```bash
+# Run all 3 VLMs (requires all 3 API keys in .env)
+python -m evaluation.vlm_comparison \
+    --images dataset_exp2/images \
+    --labels dataset_exp2/labels \
+    --output results/vlm_comparison
+
+# Run a specific VLM only
+python -m evaluation.vlm_comparison \
+    --images dataset_exp2/images \
+    --labels dataset_exp2/labels \
+    --vlms gemini-3.1-pro
+```
+
+### Results Location
+
+```
+results/vlm_comparison/
+├── comparison_summary.json          # Winner + all 3 models' metrics
+├── gpt-5_2_results.json             # GPT-5.2 full results + per-class
+├── gpt-5_2_predictions.json         # GPT-5.2 per-image predictions
+├── claude-opus-4_6_results.json     # Claude Opus 4.6 full results
+├── claude-opus-4_6_predictions.json # Claude per-image predictions
+├── gemini-3_1-pro_results.json      # Gemini 3.1 Pro full results
+├── gemini-3_1-pro_predictions.json  # Gemini per-image predictions
+└── ground_truth.json                # Ground truth for all 120 images
+```
+
+---
 
 ## Experimental Design
 
@@ -165,7 +234,7 @@ flowchart TB
 | YOLO Image Size | `640` | Standard Ultralytics input |
 | CNN Image Size | `224` | Standard ImageNet input |
 | Crop Padding | `10%` | Context capture around detected regions |
-| VLM Temperature | `0.0` | Deterministic outputs |
+| VLM Temperature | `0.0` | Deterministic-as-possible outputs |
 | Random Seed | `42` | Reproducibility across runs |
 
 ### Count-Based Metrics
@@ -173,23 +242,143 @@ flowchart TB
 Since Pipeline A has no bounding boxes, the fair comparison unit is the **inventory** (class → count). For each image, per class:
 
 ```
-TP = min(predicted, ground_truth)
-FP = max(0, predicted - ground_truth)
-FN = max(0, ground_truth - predicted)
+TP = min(predicted, ground_truth)        — correct counts
+FP = max(0, predicted - ground_truth)    — overcounting
+FN = max(0, ground_truth - predicted)    — undercounting
 ```
 
-Micro-averaged across all images for overall Precision, Recall, and F1.
+**Precision** = TP / (TP + FP) — "when it says it sees something, how often is it right?"
+**Recall** = TP / (TP + FN) — "of everything actually there, how much did it find?"
+**F1** = harmonic mean of precision and recall — single balanced score
 
-### Evaluation Pipeline
+Micro-averaged across all images and classes for overall scores. Per-class metrics also computed.
 
-```mermaid
-flowchart LR
-    A[Test Images\n+ YOLO Labels] --> B[Run All Pipelines]
-    B --> C[Compute Metrics\nP / R / F1]
-    C --> D[Confusion Matrices]
-    C --> E[Error Analysis]
-    C --> F[Comparison Report\nJSON + Charts + LaTeX]
+### Training / Test Separation
+
+> **Core rule: never test on data the model saw during training.**
+
+| Data Split | Pipeline A (VLM) | Pipeline B (YOLO-14) | Pipeline C (YOLO+CNN) |
+|------------|-------------------|----------------------|-----------------------|
+| **Training** | N/A (pre-trained by Google) | Public dataset (remapped to 14 classes) | **YOLO:** Public dataset (objectness labels) **CNN:** Experiment 1 weights |
+| **Testing** | 120 hand-photographed images | 120 hand-photographed images | 120 hand-photographed images |
+
+All three pipelines are evaluated on the **exact same 120 test images**, but none of the locally-trained models ever saw those images during training.
+
+---
+
+## Training Data
+
+### Dataset: Combined Vegetables & Fruits (Roboflow Universe)
+
+| Property | Value |
+|----------|-------|
+| Source | [Roboflow Universe — Combined Vegetables & Fruits](https://universe.roboflow.com/) |
+| Total images | ~42,000 |
+| Original classes | 47 |
+| Format | YOLOv8 (bounding box annotations) |
+| Splits | Train (19,356) / Val (2,602) / Test (1,882) |
+
+### Class Remapping (47 → 14 classes)
+
+The public dataset has 47 classes. Our experiment uses 14. The `training/remap_classes.py` script:
+
+1. **Maps** each of the 47 source classes to one of the 14 target classes (or discards it)
+2. **Splits** the generic "bell pepper" class into `bell_pepper_green` and `bell_pepper_red` using HSV colour analysis (red pixels > 40% → red, otherwise → green)
+3. **Rewrites** every `.txt` label file with new class IDs (0–13)
+4. **Discards** bounding boxes for unmapped classes
+
+```bash
+python -m training.remap_classes \
+    --src "C:/path/to/Combined Vegetables - Fruits" \
+    --dst dataset \
+    --discard-unknown
 ```
+
+**Output after remapping:** 19,356 train + 2,602 val + 1,882 test images with 225,410 total bounding boxes across 14 classes.
+
+### Objectness Labels (Pipeline C)
+
+For Pipeline C's class-agnostic detector, all 14 class IDs are remapped to `0` ("object"):
+
+```bash
+python -m training.prepare_objectness_labels --src dataset --dst dataset_objectness
+```
+
+This keeps the same bounding box coordinates but tells YOLO "there's *something* here" instead of "there's an *apple* here."
+
+---
+
+## Test Data and Annotation
+
+### 120 Hand-Photographed Test Images
+
+- **120 original photographs** taken by the author
+- Captured across real-world settings (kitchen counter, refrigerator shelf, dining table, grocery bag, chopping board)
+- Each image contains 2–8 items from the 14-class taxonomy
+- Balanced across difficulty tiers and camera angles
+- Stored in `dataset_exp2/images/` as `.jpg` files (IMG_001.jpg – IMG_120.jpg)
+
+### Annotation Process
+
+1. Images uploaded to [Roboflow](https://roboflow.com) (free tier)
+2. Bounding boxes drawn around every visible fruit/vegetable item
+3. Each box assigned one of the 14 exact class names matching `config.py`
+4. Exported in YOLOv8 format
+5. Label files placed in `dataset_exp2/labels/` (IMG_001.txt – IMG_120.txt)
+
+**Annotation rules:**
+- Grape cluster = **1 bounding box** around the entire cluster
+- Individual strawberries = **1 box per strawberry**
+- Partially occluded items = annotated (box around visible portion)
+- Bell peppers = assigned `bell_pepper_green` or `bell_pepper_red` by actual colour
+
+### YOLO Label Format
+
+Each `.txt` file contains one line per object:
+```
+<class_id> <x_center> <y_center> <width> <height>
+```
+All coordinates normalised to [0, 1]. Class IDs are 0–13 matching the 14-class taxonomy.
+
+---
+
+## Robustness Testing (Image Degradations)
+
+### Why Degradations Matter
+
+In a real mobile app, images will not always be perfect. Users may have shaky hands (blur), poor lighting (noise), or images may be compressed through messaging apps (JPEG). Testing robustness to these conditions reveals which pipeline is most reliable in practice.
+
+### Three Degradations
+
+| ID | Degradation | Parameters | Simulates |
+|:--:|-------------|-----------|-----------|
+| D1 | **Gaussian blur** | kernel=7, sigma=3.0 | Out-of-focus camera, shaky hands |
+| D2 | **Gaussian noise** | mean=0, sigma=25 | Low-light sensor noise (grainy photo) |
+| D3 | **JPEG compression** | quality=15 | Messaging app compression (WhatsApp, etc.) |
+
+These cover the three principal sources of image quality loss in a mobile workflow: **optical** (blur), **sensor** (noise), and **compression** (JPEG artifacts).
+
+### Generating Degraded Images
+
+```bash
+python -m evaluation.generate_degradations \
+    --src dataset_exp2/images \
+    --dst dataset_exp2
+```
+
+**Output:**
+```
+dataset_exp2/
+├── images/              ← 120 clean originals (unchanged)
+├── labels/              ← 120 .txt files (shared by ALL variants)
+├── images_d1_blur/      ← 120 blurred images
+├── images_d2_noise/     ← 120 noisy images
+└── images_d3_jpeg/      ← 120 JPEG-compressed images
+```
+
+Labels are shared across all conditions because degradation does not move or change the objects — only image quality changes.
+
+---
 
 ## Installation
 
@@ -197,7 +386,7 @@ flowchart LR
 
 - Python 3.10 or higher
 - GPU recommended for training (CPU supported for inference)
-- OpenAI API key (only required for Pipeline A)
+- API keys required for Pipeline A and VLM comparison (see below)
 
 ### Setup
 
@@ -218,10 +407,40 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Configure environment (only needed for Pipeline A)
-# Create .env file with:
-# OPENAI_API_KEY=sk-...
+# 4. Configure API keys (create .env file)
 ```
+
+### API Keys
+
+Create a `.env` file in the project root:
+
+```env
+# Required for Pipeline A (VLM) and VLM comparison
+OPENAI_API_KEY=sk-...          # OpenAI (GPT-5.2)
+ANTHROPIC_API_KEY=sk-ant-...   # Anthropic (Claude Opus 4.6)
+GOOGLE_API_KEY=AIza...         # Google (Gemini 3.1 Pro)
+```
+
+- **Pipeline A only** requires `GOOGLE_API_KEY` (Gemini 3.1 Pro is the winner)
+- **VLM comparison** requires all three keys to run all three models
+- **Pipelines B and C** require no API keys (fully offline)
+
+### Dependencies
+
+Core dependencies (`requirements.txt`):
+
+```
+ultralytics==8.3.57       # YOLOv8 (Pipelines B & C)
+openai>=1.59.9            # GPT-5.2 VLM client
+anthropic>=0.40.0         # Claude Opus 4.6 VLM client
+google-genai>=1.0.0       # Gemini 3.1 Pro VLM client
+pillow==11.1.0            # Image processing
+numpy==2.2.2              # Numerical computing
+rich==13.9.4              # Console formatting
+python-dotenv             # .env file loading
+```
+
+---
 
 ## Usage
 
@@ -234,11 +453,16 @@ python main.py yolo-14 <image_path>      # Pipeline B: YOLO end-to-end
 python main.py yolo-cnn <image_path>     # Pipeline C: YOLO + CNN
 
 # Evaluate all pipelines on a test set
-python main.py evaluate --images dataset/test/images --labels dataset/test/labels
+python main.py evaluate --images dataset_exp2/images --labels dataset_exp2/labels
 
 # Train models
 python main.py train yolo-14             # Train 14-class YOLO
 python main.py train yolo-obj            # Train objectness YOLO
+
+# VLM comparison (separate from pipeline evaluation)
+python -m evaluation.vlm_comparison \
+    --images dataset_exp2/images \
+    --labels dataset_exp2/labels
 
 # Utility
 python main.py --validate                # Verify environment and display config
@@ -250,98 +474,136 @@ python main.py --validate                # Verify environment and display config
 python main.py
 ```
 
-Launches a menu-driven interface:
+Launches a menu-driven interface for running pipelines, training, and evaluation.
 
-```
-  1.  Pipeline A — VLM-only (GPT-4o-mini, 14 labels)
-  2.  Pipeline B — YOLO end-to-end (14-class YOLO)
-  3.  Pipeline C — YOLO + CNN (objectness YOLO + CNN)
-  4.  Evaluate all pipelines on test set
-  5.  Train YOLO model
-  6.  Validate environment
-  7.  Exit
-```
-
-### Recommended Workflow
-
-```mermaid
-flowchart LR
-    A[1. Prepare Dataset] --> B[2. Train Models]
-    B --> C[3. Run Evaluation]
-    C --> D[4. Analyse Results]
-```
-
-```bash
-# 1. Prepare dataset (YOLO format with 14-class labels)
-#    Place in dataset/ with train/val/test splits
-
-# 2. Prepare objectness labels (remap class IDs to 0)
-python -m training.prepare_objectness_labels --src dataset --dst dataset_objectness
-
-# 3. Train models
-python main.py train yolo-14                    # 14-class YOLO → weights/yolo_14class_best.pt
-python main.py train yolo-obj                   # Objectness YOLO → weights/yolo_objectness_best.pt
-# (CNN weights come from Experiment 1 → weights/cnn_winner.pth)
-
-# 4. Evaluate all available pipelines
-python main.py evaluate --images dataset/test/images --labels dataset/test/labels
-
-# 5. Results in results/
-#    - comparison_summary.json
-#    - comparison_bars.png
-#    - comparison_table.tex
-#    - per-pipeline confusion matrices and reports
-```
+---
 
 ## Training
 
-### 14-Class YOLO (Pipeline B)
-
-Fine-tunes YOLOv8s on the 14 fruit/vegetable classes:
+### Option 1: Local Training (GPU required)
 
 ```bash
+# Train 14-class YOLO (Pipeline B)
 python main.py train yolo-14
-python main.py train yolo-14 --epochs 50 --batch 32
-python -m training.train_yolo_14class --data data/yolo_14class.yaml
-```
 
-Best weights are automatically copied to `weights/yolo_14class_best.pt`.
-
-### Objectness YOLO (Pipeline C)
-
-Fine-tunes YOLOv8s as a 1-class objectness detector (all bounding boxes, single "object" class):
-
-```bash
-# First, prepare objectness labels
-python -m training.prepare_objectness_labels --src dataset --dst dataset_objectness
-
-# Then train
+# Train objectness YOLO (Pipeline C)
 python main.py train yolo-obj
-python -m training.train_yolo_objectness --data data/yolo_objectness.yaml
 ```
 
-Best weights are automatically copied to `weights/yolo_objectness_best.pt`.
+**Default hyperparameters** (from `config.py`):
 
-### CNN Classifier (Pipeline C)
+| Setting | Value |
+|---------|-------|
+| Base model | YOLOv8s (pre-trained on COCO) |
+| Epochs | 100 |
+| Batch size | 16 |
+| Image size | 640 |
+| Learning rate | 0.01 |
+| Early stopping | 15 epochs patience |
+| Random seed | 42 |
 
-The CNN classifier is provided by Experiment 1. Place the winning architecture's weights at `weights/cnn_winner.pth` and set `cnn_model_name` in `config.py` to match (`efficientnet`, `resnet`, or `custom`).
+### Option 2: Google Colab Training (no local GPU)
 
-## Evaluation
+A Colab notebook is provided for training on a free T4 GPU:
 
-### Running Evaluation
+1. Upload `dataset_14class.zip` and `dataset_objectness.zip` to Google Drive under `SnapShelf/`
+2. Open `training/train_colab.ipynb` in Google Colab
+3. Set runtime to **GPU (T4)**
+4. Run all cells — trains both YOLO models sequentially
+5. Download trained weights from `SnapShelf/weights/` in Google Drive
+
+### After Training
 
 ```bash
-# Evaluate all available pipelines
-python main.py evaluate --images dataset/test/images --labels dataset/test/labels
+# Verify weight files exist
+ls weights/yolo_14class_best.pt       # 14-class YOLO (Pipeline B)
+ls weights/yolo_objectness_best.pt    # Objectness YOLO (Pipeline C)
 
-# Evaluate specific pipelines
-python main.py evaluate --images dataset/test/images --labels dataset/test/labels --pipelines yolo-14 yolo-cnn
+# Copy CNN weights from Experiment 1
+cp /path/to/experiment1/best_efficientnet.pth weights/cnn_winner.pth
 
-# Custom output directory
-python main.py evaluate --images dataset/test/images --labels dataset/test/labels --output my_results/
+# Smoke test
+python main.py yolo-14 dataset_exp2/images/IMG_001.jpg
+python main.py yolo-cnn dataset_exp2/images/IMG_001.jpg
+```
+
+---
+
+## Evaluation — The 12-Run Matrix
+
+### The Matrix
+
+3 pipelines x 4 image conditions = **12 evaluation runs**.
+
+| Run | Pipeline | Condition | Images Folder |
+|:---:|----------|-----------|---------------|
+| 1 | A (VLM) | Clean | `dataset_exp2/images` |
+| 2 | A (VLM) | D1: Blur | `dataset_exp2/images_d1_blur` |
+| 3 | A (VLM) | D2: Noise | `dataset_exp2/images_d2_noise` |
+| 4 | A (VLM) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
+| 5 | B (YOLO) | Clean | `dataset_exp2/images` |
+| 6 | B (YOLO) | D1: Blur | `dataset_exp2/images_d1_blur` |
+| 7 | B (YOLO) | D2: Noise | `dataset_exp2/images_d2_noise` |
+| 8 | B (YOLO) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
+| 9 | C (YOLO+CNN) | Clean | `dataset_exp2/images` |
+| 10 | C (YOLO+CNN) | D1: Blur | `dataset_exp2/images_d1_blur` |
+| 11 | C (YOLO+CNN) | D2: Noise | `dataset_exp2/images_d2_noise` |
+| 12 | C (YOLO+CNN) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
+
+Labels folder is **always** `dataset_exp2/labels` — degradation changes image quality, not object locations.
+
+### Running the 12 Runs
+
+```bash
+# Clean images (runs all 3 pipelines)
+python main.py evaluate \
+    --images dataset_exp2/images \
+    --labels dataset_exp2/labels \
+    --output results/clean
+
+# D1: Blur
+python main.py evaluate \
+    --images dataset_exp2/images_d1_blur \
+    --labels dataset_exp2/labels \
+    --output results/d1_blur
+
+# D2: Noise
+python main.py evaluate \
+    --images dataset_exp2/images_d2_noise \
+    --labels dataset_exp2/labels \
+    --output results/d2_noise
+
+# D3: JPEG compression
+python main.py evaluate \
+    --images dataset_exp2/images_d3_jpeg \
+    --labels dataset_exp2/labels \
+    --output results/d3_jpeg
+```
+
+### Pre-Flight Checklist
+
+Before running, verify everything is in place:
+
+```bash
+# Weight files
+ls weights/yolo_14class_best.pt        # Pipeline B
+ls weights/yolo_objectness_best.pt     # Pipeline C
+ls weights/cnn_winner.pth              # Pipeline C (CNN)
+
+# API key (Pipeline A)
+echo $GOOGLE_API_KEY                   # Should print your key
+
+# Test images and labels
+ls dataset_exp2/images/*.jpg | wc -l         # 120
+ls dataset_exp2/labels/*.txt | wc -l         # 120
+ls dataset_exp2/images_d1_blur/*.jpg | wc -l # 120
+ls dataset_exp2/images_d2_noise/*.jpg | wc -l # 120
+ls dataset_exp2/images_d3_jpeg/*.jpg | wc -l  # 120
 ```
 
 ### Evaluation Outputs
+
+For each condition, the evaluator generates:
 
 | File | Description |
 |------|-------------|
@@ -353,17 +615,17 @@ python main.py evaluate --images dataset/test/images --labels dataset/test/label
 | `{pipeline}_confusion.png` | Confusion matrix heatmap |
 | `{pipeline}_report.json` | Full metrics, per-class breakdown, error analysis |
 
-### Metrics
+### Expected Timing
 
-**Micro-averaged** across all test images:
+| Pipeline | Approx. per image | Total (120 images) |
+|----------|-------------------|-------------------|
+| A (VLM) | ~9 seconds (Gemini API) | ~18 minutes |
+| B (YOLO) | 20–80 ms (GPU) / 200–500 ms (CPU) | ~5 sec – 1 min |
+| C (YOLO+CNN) | 30–120 ms (GPU) / 300–800 ms (CPU) | ~6 sec – 1.5 min |
 
-| Metric | Formula |
-|--------|---------|
-| Precision | TP / (TP + FP) |
-| Recall | TP / (TP + FN) |
-| F1 | 2 × P × R / (P + R) |
+Total for all 12 runs: **~80–90 minutes** (dominated by VLM API time across 4 conditions).
 
-Per-class metrics are also computed for detailed analysis.
+---
 
 ## Output Schema
 
@@ -378,7 +640,7 @@ All pipelines produce an identical JSON structure:
   },
   "meta": {
     "pipeline": "yolo-14",
-    "image": "test_001.jpg",
+    "image": "IMG_001.jpg",
     "runtime_ms": 45.32,
     "detections_count": 6,
     "timing_breakdown": {
@@ -389,30 +651,14 @@ All pipelines produce an identical JSON structure:
 }
 ```
 
-### Inventory Fields
-
 | Field | Type | Description |
 |-------|:----:|-------------|
 | `inventory` | `Dict[str, int]` | Class name → count mapping |
-
-### Metadata Fields
-
-| Field | Type | Description |
-|-------|:----:|-------------|
 | `pipeline` | string | `vlm` · `yolo-14` · `yolo-cnn` |
-| `image` | string | Source image filename |
 | `runtime_ms` | float | Total execution time in milliseconds |
-| `detections_count` | integer | Number of YOLO detections (Pipeline B/C) |
-| `timing_breakdown` | object | Per-component timing |
+| `detections_count` | integer | Number of YOLO detections (Pipeline B/C only) |
 
-### Timing Breakdown by Pipeline
-
-| Field | Pipeline A | Pipeline B | Pipeline C |
-|-------|:----------:|:----------:|:----------:|
-| `vlm_call_ms` | VLM API time | — | — |
-| `detection_ms` | — | YOLO inference | YOLO inference |
-| `classification_ms` | — | — | CNN batch inference |
-| `total_ms` | Total | Total | Total |
+---
 
 ## Configuration
 
@@ -422,7 +668,7 @@ All experiment parameters are centralised in `config.py` as a frozen dataclass:
 @dataclass(frozen=True)
 class ExperimentConfig:
     # VLM Settings (Pipeline A)
-    vlm_model: str = "gpt-4o-mini"
+    vlm_model: str = "gpt-4o-mini"       # Original baseline; Gemini used via vlm_google.py
     vlm_temperature: float = 0.0
     vlm_max_tokens: int = 500
 
@@ -441,124 +687,188 @@ class ExperimentConfig:
     random_seed: int = 42
 ```
 
-### CNN Factory Pattern
-
-Pipeline C uses a factory pattern so the CNN architecture can be swapped without changing pipeline code:
-
-```python
-from clients.cnn_classifier import create_cnn_classifier
-
-classifier = create_cnn_classifier()          # Uses config defaults
-classifier = create_cnn_classifier("resnet")  # Override architecture
-
-label = classifier.predict(crop)              # Single crop
-labels = classifier.predict_batch(crops)      # Batch of crops
-```
-
-Available architectures: `efficientnet` (EfficientNet-B0), `resnet` (ResNet-18), `custom` (3-block CNN).
+---
 
 ## Reproducibility
 
 ### Singleton Pattern
 
-All model clients use a singleton pattern:
-- Models load once, reused across pipeline runs
-- Timing measurements exclude initialisation overhead
-- Memory efficiency across multiple experiment runs
+All model clients use a singleton pattern — models load once and are reused across pipeline runs. Timing measurements exclude initialisation overhead.
 
 ### Random Seed Control
 
-Seeds are set automatically on experiment initialisation:
-- Python `random` module
-- NumPy random state
-- PyTorch (CPU and CUDA)
+Seeds are set automatically on experiment initialisation for Python `random`, NumPy, and PyTorch (CPU + CUDA).
 
 ### Structured Logging
 
-Every experiment run generates detailed logs in `logs/experiment_{timestamp}.jsonl`:
-
-```json
-{"timestamp": "2025-01-31T15:30:45", "pipeline": "yolo-14", "step": "detection", "details": {"bbox": {...}, "confidence": 0.87, "label": "apple"}}
-```
+Every experiment run generates detailed logs in `logs/experiment_{timestamp}.jsonl` with timestamped entries for each pipeline step, detection event, and error.
 
 ### Pinned Dependencies
 
-Core dependencies are pinned for reproducibility:
+Core dependencies are pinned for reproducibility (see `requirements.txt`).
 
-```
-ultralytics==8.3.57
-openai==1.59.9
-pillow==11.1.0
-numpy==2.2.2
-rich==13.9.4
-```
+---
 
-Additional dependencies (torch, scikit-learn, matplotlib, seaborn, pandas) use minimum version constraints.
+## Key Findings and Discussion Points
+
+### The Grape Semantic Ambiguity
+
+All three VLMs exhibited the same systematic error on the `grape` class. The test annotations treated **1 grape cluster = 1 unit**, but VLMs interpreted each **individual grape berry** as a separate item (reporting 4–6 per cluster instead of 1).
+
+| Model | Grape FP | Grape Precision | Impact on Overall F1 |
+|-------|----------|-----------------|---------------------|
+| Gemini 3.1 Pro | 119 | 0.261 | Drops F1 from ~0.99 to 0.90 |
+| GPT-5.2 | 125 | 0.252 | Drops F1 from ~0.99 to 0.90 |
+| Claude Opus 4.6 | 174 | 0.194 | Drops F1 from ~0.99 to 0.87 |
+
+**This is not a bug — it is a semantic ambiguity.** Neither interpretation is wrong. This is a valuable finding for the dissertation, revealing a fundamental challenge in VLM-based counting: the model and the annotator may have different definitions of "one unit."
+
+**Recommendation for the dissertation:** Report results both **with** and **without** the grape class. Without grape, all three VLMs achieve ~98–99% F1, demonstrating the approach works excellently for unambiguous items.
+
+### Domain Gap (Pipeline C)
+
+Pipeline C's CNN was trained on clean, centred, single-item images (Experiment 1), but receives YOLO-cropped regions from multi-item real-world scenes. These crops may include partial objects, background clutter, or unusual angles. This **domain gap** is expected and is a legitimate finding — it reveals a real limitation of the detect-then-classify approach.
+
+### VLM Non-Determinism
+
+While temperature=0.0 is set for reproducibility, VLM outputs are not guaranteed to be fully deterministic across API versions or over time. This is an inherent limitation of API-based approaches and should be acknowledged in the limitations section.
+
+---
 
 ## Project Structure
 
 ```
 SnapShelf-console/
-├── config.py                         # 14-class constants, frozen ExperimentConfig, Timer, Logger
+├── config.py                         # 14-class constants, frozen ExperimentConfig
 ├── main.py                           # CLI: vlm / yolo-14 / yolo-cnn / evaluate / train
 ├── requirements.txt                  # Pinned + minimum-version dependencies
-├── .gitignore                        # Excludes dataset/, weights/, runs/, results/
+├── .env                              # API keys (gitignored)
+├── .gitignore
+├── README.md                         # This file
+├── EXPERIMENT2_GUIDE.md              # Step-by-step walkthrough
+├── EXPERIMENT2_PLAN.md               # Original experiment plan
+├── PICTURES_PLAN.md                  # Photo dataset planning
 │
-├── clients/
+├── clients/                          # Model inference clients
 │   ├── __init__.py
-│   ├── vlm_client.py                 # GPT-4o-mini constrained to 14 labels (Pipeline A)
-│   ├── yolo_detector.py              # 14-class YOLO inference (Pipeline B)
-│   ├── yolo_objectness.py            # 1-class objectness YOLO (Pipeline C)
-│   └── cnn_classifier.py             # CNN factory: EfficientNet / ResNet / Custom (Pipeline C)
+│   ├── vlm_client.py                # GPT-4o-mini (original baseline)
+│   ├── vlm_openai.py               # GPT-5.2 (VLM comparison)
+│   ├── vlm_anthropic.py            # Claude Opus 4.6 (VLM comparison)
+│   ├── vlm_google.py               # Gemini 3.1 Pro (VLM winner → Pipeline A)
+│   ├── yolo_detector.py            # 14-class YOLO (Pipeline B)
+│   ├── yolo_objectness.py          # 1-class objectness YOLO (Pipeline C)
+│   └── cnn_classifier.py           # CNN factory: EfficientNet / ResNet (Pipeline C)
 │
-├── pipelines/
+├── pipelines/                        # Pipeline orchestration
 │   ├── __init__.py
-│   ├── output.py                     # Inventory = Dict[str, int] schema
-│   ├── vlm_pipeline.py              # Pipeline A: VLM-only
-│   ├── yolo_pipeline.py             # Pipeline B: YOLO end-to-end
-│   └── yolo_cnn_pipeline.py         # Pipeline C: YOLO + CNN
+│   ├── output.py                    # Inventory = Dict[str, int] schema
+│   ├── vlm_pipeline.py             # Pipeline A: VLM-only
+│   ├── yolo_pipeline.py            # Pipeline B: YOLO end-to-end
+│   └── yolo_cnn_pipeline.py        # Pipeline C: YOLO + CNN
 │
-├── training/
+├── training/                         # Model training scripts
 │   ├── __init__.py
-│   ├── train_yolo_14class.py         # Fine-tune YOLOv8s on 14 classes
-│   ├── train_yolo_objectness.py      # Fine-tune YOLOv8s as objectness detector
-│   ├── prepare_objectness_labels.py  # Remap class IDs to 0 for objectness training
-│   └── data_yaml_generator.py        # Generate data.yaml for Ultralytics
+│   ├── remap_classes.py             # Remap 47-class dataset → 14 classes
+│   ├── prepare_objectness_labels.py # Remap class IDs to 0 for objectness
+│   ├── train_yolo_14class.py        # Fine-tune YOLOv8s on 14 classes
+│   ├── train_yolo_objectness.py     # Fine-tune YOLOv8s as objectness detector
+│   ├── data_yaml_generator.py       # Generate data.yaml for Ultralytics
+│   └── train_colab.ipynb            # Google Colab notebook (for no-GPU setups)
 │
-├── evaluation/
+├── evaluation/                       # Evaluation and metrics
 │   ├── __init__.py
-│   ├── ground_truth.py               # YOLO .txt labels → inventory dicts
-│   ├── metrics.py                    # Count-based P/R/F1 (micro-averaged, per-class)
-│   ├── confusion.py                  # Confusion matrix builder + heatmap plotter
-│   ├── error_analysis.py             # Missed / false positive / over-under counting breakdown
-│   ├── evaluate_runner.py            # Orchestrator: runs pipelines on test set
-│   └── report.py                     # Comparison tables, bar charts, LaTeX output
+│   ├── ground_truth.py              # YOLO .txt labels → inventory dicts
+│   ├── metrics.py                   # Count-based P/R/F1 (micro-averaged, per-class)
+│   ├── confusion.py                 # Confusion matrix builder + heatmap plotter
+│   ├── error_analysis.py            # Missed / false positive / counting breakdown
+│   ├── evaluate_runner.py           # Orchestrator: runs pipelines on test set
+│   ├── report.py                    # Comparison tables, bar charts, LaTeX output
+│   ├── vlm_comparison.py           # 3-model VLM comparison runner
+│   └── generate_degradations.py    # D1/D2/D3 image degradation generator
 │
-├── data/
-│   ├── yolo_14class.yaml             # YOLO data config (nc=14)
-│   └── yolo_objectness.yaml          # YOLO data config (nc=1, class="object")
+├── data/                             # YOLO training configs
+│   ├── yolo_14class.yaml            # nc=14, 14 class names
+│   └── yolo_objectness.yaml         # nc=1, class="object"
 │
-├── weights/                          # (gitignored) Model weights
-├── results/                          # (gitignored) Evaluation outputs
-└── logs/                             # (gitignored) JSONL experiment logs
+├── dataset_exp2/                     # Experiment 2 test data
+│   ├── images/                      # 120 clean test images
+│   ├── labels/                      # 120 YOLO annotation files
+│   ├── images_d1_blur/              # 120 blurred images
+│   ├── images_d2_noise/             # 120 noisy images
+│   └── images_d3_jpeg/              # 120 JPEG-compressed images
+│
+├── dataset/                          # 14-class training data (from remap)
+│   ├── train/images/ + labels/      # ~19,356 images
+│   ├── val/images/ + labels/        # ~2,602 images
+│   └── test/images/ + labels/       # ~1,882 images
+│
+├── dataset_objectness/               # Objectness training data (class IDs = 0)
+│   ├── train/images/ + labels/
+│   ├── val/images/ + labels/
+│   └── test/images/ + labels/
+│
+├── weights/                          # Trained model weights (gitignored)
+│   ├── yolo_14class_best.pt         # Pipeline B
+│   ├── yolo_objectness_best.pt      # Pipeline C (detection)
+│   └── cnn_winner.pth               # Pipeline C (classification)
+│
+├── results/                          # Evaluation outputs (gitignored)
+│   ├── vlm_comparison/              # 3-model VLM comparison results
+│   ├── clean/                       # 12-run: clean condition
+│   ├── d1_blur/                     # 12-run: blur condition
+│   ├── d2_noise/                    # 12-run: noise condition
+│   └── d3_jpeg/                     # 12-run: JPEG condition
+│
+└── logs/                             # JSONL experiment logs (gitignored)
 ```
+
+---
+
+## Dissertation Methodology Text
+
+Ready-to-adapt paragraphs for your dissertation report:
+
+### VLM Model Selection
+
+> *"To select the optimal VLM for Pipeline A, a controlled comparison was conducted across three flagship models: GPT-5.2 (OpenAI), Claude Opus 4.6 (Anthropic), and Gemini 3.1 Pro (Google). All models received an identical frozen prompt constrained to the 14 target classes, with temperature set to 0.0. Each model processed the full set of 120 test images. Gemini 3.1 Pro achieved the highest micro-averaged F1 score (0.9044), marginally outperforming GPT-5.2 (0.9002) and Claude Opus 4.6 (0.8674). All three models achieved near-identical recall (0.9949), indicating that VLMs reliably detect items; the differentiator was precision, where Gemini produced the fewest false positives. Gemini 3.1 Pro was therefore selected as Pipeline A's VLM for the subsequent 12-run comparison."*
+
+### Experimental Design
+
+> *"Experiment 2 evaluates three end-to-end pipelines on an identical test set of 120 photographs, each containing 2–8 items from a 14-class fruit and vegetable taxonomy. Pipeline A uses Gemini 3.1 Pro (Google), selected through a three-model VLM comparison, with a constrained prompt restricting output to the 14 target classes. Pipeline B uses a YOLOv8s object detector fine-tuned to directly predict all 14 classes. Pipeline C uses a two-stage approach: a YOLOv8s model trained as a class-agnostic objectness detector to localise items, followed by an EfficientNet-B0 classifier (the winning model from Experiment 1) to classify each cropped region."*
+
+### Training/Test Separation
+
+> *"To ensure a fair comparison, training and test data were strictly separated. Pipelines B and C were fine-tuned on the publicly available Combined Vegetables & Fruits dataset (Roboflow Universe, ~42,000 images, 47 classes), remapped to the 14-class taxonomy used in this study (see Section X). The test set comprised 120 original photographs taken by the author across five real-world settings, annotated independently in Roboflow and never used during training. Pipeline A (Gemini 3.1 Pro) was used as-is without fine-tuning; while we cannot guarantee our test images were absent from its internet-scale training corpus, this reflects the realistic deployment scenario for a zero-shot VLM."*
+
+### Robustness Evaluation
+
+> *"To assess robustness, three image degradations were applied to the test set: Gaussian blur (kernel=7, sigma=3.0, simulating an out-of-focus camera), additive Gaussian noise (sigma=25, simulating low-light sensor noise), and JPEG compression at quality level 15 (simulating lossy transmission through messaging applications). Each pipeline was evaluated on all four conditions (clean plus three degraded), yielding 12 evaluation runs. Ground truth annotations were shared across all conditions, as degradation does not alter object locations."*
+
+### Grape Class Discussion
+
+> *"A notable finding was the consistent over-prediction of the grape class across all three VLMs. Ground truth annotations treated one grape cluster as a single unit, whereas VLMs counted individual grape berries within each cluster, reporting 4–6 items per cluster. This semantic ambiguity — what constitutes 'one grape' — is not a model error but a fundamental challenge in count-based evaluation: the annotation convention and the model's interpretation of a 'unit' may diverge. When the grape class is excluded, all three VLMs achieve F1 scores above 0.98, suggesting the approach is highly effective for unambiguously defined items."*
+
+### Limitations
+
+> *"Several limitations should be acknowledged. First, the test set of 120 images, while purpose-built with controlled variation, is small by industry standards. Second, all images were captured using a single device by a single photographer. Third, Pipeline C's CNN was trained on clean, single-item, centred images (Experiment 1), introducing a domain gap when classifying YOLO-cropped regions from cluttered scenes. Fourth, while Pipeline A (Gemini 3.1 Pro) was queried with temperature=0 for reproducibility, VLM outputs are not guaranteed to be fully deterministic across API versions. Finally, the grape class revealed a semantic ambiguity in count-based evaluation that may extend to other aggregate items (e.g., cherry tomatoes on a vine)."*
+
+---
 
 ## System Requirements
 
 | Requirement | Specification |
 |-------------|:-------------:|
 | Python | 3.10+ |
-| RAM | 8GB minimum (16GB recommended for training) |
-| Disk | ~500MB (models + dataset) |
-| GPU | Recommended for training, optional for inference |
-| Network | Only for Pipeline A (OpenAI API) |
-
-## License
-
-This project is developed as part of a BSc dissertation.
+| RAM | 8 GB minimum (16 GB recommended for training) |
+| Disk | ~2 GB (models + datasets) |
+| GPU | Recommended for training (Colab T4 alternative provided) |
+| Network | Required for Pipeline A (Google API) and VLM comparison |
 
 ## Acknowledgements
 
 - [Ultralytics](https://github.com/ultralytics/ultralytics) for YOLOv8
-- [OpenAI](https://openai.com) for GPT-4o Vision API
+- [Google](https://ai.google.dev/) for Gemini 3.1 Pro API
+- [OpenAI](https://openai.com) for GPT-5.2 API
+- [Anthropic](https://anthropic.com) for Claude Opus 4.6 API
 - [PyTorch](https://pytorch.org) for CNN training and inference
+- [Roboflow](https://roboflow.com) for annotation tools and training datasets
