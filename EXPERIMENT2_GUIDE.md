@@ -63,9 +63,9 @@ If a YOLO model trains on a photo of three apples on a counter, and you then
 learned to detect apples, but because it memorised that specific image. The
 resulting F1 score is meaningless.
 
-Pipeline A (VLM) uses Gemini 3.1 Pro (selected as the winner from a
-[three-model VLM comparison](#vlm-comparison)), which was pre-trained by Google
-on internet data. You cannot guarantee your images were never in its training
+Pipeline A (VLM) uses GPT-5.2 (selected from a
+[three-model VLM comparison](#vlm-comparison) for its optimal balance of
+accuracy, speed, and cost), which was pre-trained by OpenAI on internet data. You cannot guarantee your images were never in its training
 set, but you **can** guarantee that your own YOLO and CNN models never saw the
 test images.
 
@@ -73,7 +73,7 @@ test images.
 
 | Data Split | Pipeline A (VLM) | Pipeline B (YOLO-14) | Pipeline C (YOLO+CNN) |
 |------------|-------------------|----------------------|-----------------------|
-| **Training** | N/A (pre-trained by Google) | Public dataset (remapped to 14 classes) | **YOLO:** Public dataset (objectness labels) **CNN:** Experiment 1 weights (single-item images) |
+| **Training** | N/A (pre-trained by OpenAI) | Public dataset (remapped to 14 classes) | **YOLO:** Public dataset (objectness labels) **CNN:** Experiment 1 weights (single-item images) |
 | **Testing** | Your 120 hand-photographed images | Your 120 hand-photographed images | Your 120 hand-photographed images |
 
 The critical point: **all three pipelines are evaluated on the exact same 120
@@ -100,7 +100,7 @@ annotations** — no Roboflow work needed for training data. This gives you:
 > bounding boxes across 63 fruit and vegetable classes. These were remapped to
 > our 14-class taxonomy (see Section X). The test set comprised 120 original
 > photographs taken in five real-world settings, annotated independently and
-> never used during training. Pipeline A (Gemini 3.1 Pro) was used as-is without
+> never used during training. Pipeline A (GPT-5.2) was used as-is without
 > fine-tuning; while we cannot guarantee our test images were absent from its
 > internet-scale training corpus, this reflects the realistic deployment scenario
 > for a zero-shot VLM."*
@@ -726,8 +726,8 @@ ls weights/yolo_14class_best.pt
 ls weights/yolo_objectness_best.pt
 ls weights/cnn_winner.pth
 
-# 2. Google API key is set (for Pipeline A)
-echo $GOOGLE_API_KEY    # Should print your key (or set it in .env)
+# 2. OpenAI API key is set (for Pipeline A)
+echo $OPENAI_API_KEY    # Should print your key (or set it in .env)
 
 # 3. Test images and labels exist
 ls dataset_exp2/images/*.jpg | wc -l         # 120
@@ -844,7 +844,7 @@ to match your institution's style and requirements.
 
 > *"Experiment 2 evaluates three end-to-end pipelines on an identical test set
 > of 120 photographs, each containing 2–8 items from a 14-class fruit and
-> vegetable taxonomy. Pipeline A uses a vision-language model (Gemini 3.1 Pro,
+> vegetable taxonomy. Pipeline A uses a vision-language model (GPT-5.2,
 > OpenAI) with a constrained prompt that restricts output to the 14 target
 > classes. Pipeline B uses a YOLOv8s object detector fine-tuned to directly
 > predict all 14 classes. Pipeline C uses a two-stage approach: a YOLOv8s model
@@ -909,7 +909,7 @@ to match your institution's style and requirements.
 > single-item, centred images (Experiment 1), introducing a domain gap when
 > classifying YOLO-cropped regions from cluttered multi-item scenes. This is
 > reported as a finding rather than a flaw, as it reveals a genuine limitation
-> of the detect-then-classify paradigm. Fourth, while Pipeline A (Gemini 3.1 Pro)
+> of the detect-then-classify paradigm. Fourth, while Pipeline A (GPT-5.2)
 > was queried with temperature=0 for reproducibility, the VLM's outputs are not
 > guaranteed to be fully deterministic across API versions. Finally, results are
 > specific to the 14-class taxonomy and may not generalise to larger class sets."*
