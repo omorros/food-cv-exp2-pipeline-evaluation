@@ -16,7 +16,7 @@ from google.genai import types
 
 from config import CLASSES
 
-MODEL = "gemini-3.1-pro"
+MODEL = "gemini-3.1-pro-preview"
 
 FROZEN_PROMPT = f"""You are an inventory counting assistant. Examine the image and count every
 visible item that matches one of the following 14 classes:
@@ -71,7 +71,7 @@ def identify(image_path: str) -> Dict[str, int]:
         contents=[FROZEN_PROMPT, image_part],
         config=types.GenerateContentConfig(
             temperature=0.0,
-            max_output_tokens=500,
+            max_output_tokens=2048,
         ),
     )
 
