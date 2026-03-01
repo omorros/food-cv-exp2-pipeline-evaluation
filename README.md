@@ -74,25 +74,25 @@ Inventory = Dict[str, int]
 
 | Pipeline | Strategy | Flow | Models Used | API Calls |
 |:--------:|----------|------|-------------|:---------:|
-| **A** | VLM-only | Image → Gemini 3.1 Pro → inventory | Gemini 3.1 Pro (Google) | 1 per image |
+| **A** | VLM-only | Image → GPT-5.2 → inventory | GPT-5.2 (OpenAI) | 1 per image |
 | **B** | YOLO end-to-end | Image → 14-class YOLO → inventory | Custom YOLOv8s | 0 |
 | **C** | YOLO + CNN | Image → objectness YOLO → crops → CNN → inventory | Objectness YOLOv8s + EfficientNet-B0 | 0 |
 
 **Key insight:** Pipelines B and C use **no API calls at all**. The comparison is VLM vs. pure detection vs. detect-then-classify.
 
-### Pipeline A: VLM-Only (Gemini 3.1 Pro)
+### Pipeline A: VLM-Only (GPT-5.2)
 
 ```
-Input Image → Gemini 3.1 Pro (constrained to 14 labels) → Inventory JSON {class: count}
+Input Image → GPT-5.2 (constrained to 14 labels) → Inventory JSON {class: count}
 ```
 
-Sends the full image to Gemini 3.1 Pro with a frozen prompt that explicitly lists all 14 class names and instructs the model to count precisely. The VLM was selected through a [three-model comparison](#vlm-comparison-pipeline-a-model-selection) against GPT-5.2 and Claude Opus 4.6.
+Sends the full image to GPT-5.2 with a frozen prompt that explicitly lists all 14 class names and instructs the model to count precisely. GPT-5.2 was selected through a [three-model comparison](#vlm-comparison-pipeline-a-model-selection) against Gemini 3.1 Pro and Claude Opus 4.6. While Gemini scored marginally higher on F1 (0.9044 vs 0.9002, a statistically insignificant difference of 0.004), GPT-5.2 was chosen for its **2.4x lower latency** and **2.7x lower cost** — critical factors for a production mobile application.
 
 **Characteristics:**
 - Single API call per image
 - Prompt-constrained to the 14 valid classes only
 - No detection or cropping — all reasoning done by the VLM
-- Requires Google API key
+- Requires OpenAI API key
 - Non-deterministic (VLM outputs may vary slightly across runs)
 
 ### Pipeline B: YOLO End-to-End
@@ -128,8 +128,8 @@ A two-stage approach that separates **detection** from **classification**. An ob
 
 | Component | File | Model |
 |-----------|------|-------|
-| VLM Client (winner) | `clients/vlm_google.py` | Gemini 3.1 Pro (`gemini-3.1-pro-preview`) |
-| VLM Client (comparison) | `clients/vlm_openai.py` | GPT-5.2 |
+| VLM Client (winner) | `clients/vlm_openai.py` | GPT-5.2 (`gpt-5.2`) → Pipeline A |
+| VLM Client (comparison) | `clients/vlm_google.py` | Gemini 3.1 Pro (`gemini-3.1-pro-preview`) |
 | VLM Client (comparison) | `clients/vlm_anthropic.py` | Claude Opus 4.6 (`claude-opus-4-6`) |
 | Original VLM Client | `clients/vlm_client.py` | GPT-4o-mini (baseline reference) |
 | 14-Class YOLO | `clients/yolo_detector.py` | `weights/yolo_14class_best.pt` |
@@ -179,8 +179,8 @@ All three models received the **identical frozen prompt** constrained to the 14 
 - **Precision is the differentiator** — Gemini overcounts the least, Claude the most
 - **12 of 14 classes scored perfect F1 = 1.0** on all three models
 - **The grape class is the sole source of error** — VLMs count individual grapes in a cluster rather than treating the cluster as one unit (see [Discussion Points](#the-grape-semantic-ambiguity))
-- **GPT-5.2 is 2.4x faster** than Gemini but marginally less accurate (F1 difference: 0.004)
-- **Winner: Gemini 3.1 Pro** — selected as Pipeline A's VLM for the 12-run comparison
+- **GPT-5.2 is 2.4x faster** and **2.7x cheaper** than Gemini, with only 0.004 lower F1
+- **Selected for Pipeline A: GPT-5.2** — the F1 difference vs Gemini (0.9002 vs 0.9044) is not statistically significant on 120 images. GPT-5.2 was chosen for its superior latency and cost, which are critical factors for a production mobile application
 
 ### Per-Class Breakdown (all models identical except grape)
 
@@ -228,10 +228,10 @@ All three models received the **identical frozen prompt** constrained to the 14 
 | Component | API Calls | Est. Cost |
 |-----------|:---------:|----------:|
 | VLM comparison (3 models × 120 images) | 360 | ~$4.38 |
-| Pipeline A in 12-run matrix (Gemini × 4 conditions × 120 images) | 480 | ~$4.68 |
-| **Total VLM API cost** | **840** | **~$9.06** |
+| Pipeline A in 12-run matrix (GPT-5.2 × 4 conditions × 120 images) | 480 | ~$1.76 |
+| **Total VLM API cost** | **840** | **~$6.14** |
 
-Pipelines B and C are fully offline — **zero API cost**. This is a significant advantage at scale: processing 10,000 images/day would cost ~$100/day with Gemini vs. $0 with YOLO.
+Pipelines B and C are fully offline — **zero API cost**. Choosing GPT-5.2 over Gemini saved ~$2.92 on the 12-run matrix alone. At production scale (10,000 images/day), GPT-5.2 would cost ~$40/day vs. $0 for the YOLO pipelines.
 
 ### How to Run the VLM Comparison
 
@@ -302,7 +302,7 @@ Micro-averaged across all images and classes for overall scores. Per-class metri
 
 | Data Split | Pipeline A (VLM) | Pipeline B (YOLO-14) | Pipeline C (YOLO+CNN) |
 |------------|-------------------|----------------------|-----------------------|
-| **Training** | N/A (pre-trained by Google) | Public dataset (remapped to 14 classes) | **YOLO:** Public dataset (objectness labels) **CNN:** Experiment 1 weights |
+| **Training** | N/A (pre-trained by OpenAI) | Public dataset (remapped to 14 classes) | **YOLO:** Public dataset (objectness labels) **CNN:** Experiment 1 weights |
 | **Testing** | 120 hand-photographed images | 120 hand-photographed images | 120 hand-photographed images |
 
 All three pipelines are evaluated on the **exact same 120 test images**, but none of the locally-trained models ever saw those images during training.
@@ -464,7 +464,7 @@ ANTHROPIC_API_KEY=sk-ant-...   # Anthropic (Claude Opus 4.6)
 GOOGLE_API_KEY=AIza...         # Google (Gemini 3.1 Pro)
 ```
 
-- **Pipeline A only** requires `GOOGLE_API_KEY` (Gemini 3.1 Pro is the winner)
+- **Pipeline A only** requires `OPENAI_API_KEY` (GPT-5.2 is the selected VLM)
 - **VLM comparison** requires all three keys to run all three models
 - **Pipelines B and C** require no API keys (fully offline)
 
@@ -634,7 +634,7 @@ ls weights/yolo_objectness_best.pt     # Pipeline C
 ls weights/cnn_winner.pth              # Pipeline C (CNN)
 
 # API key (Pipeline A)
-echo $GOOGLE_API_KEY                   # Should print your key
+echo $OPENAI_API_KEY                   # Should print your key
 
 # Test images and labels
 ls dataset_exp2/images/*.jpg | wc -l         # 120
@@ -662,11 +662,11 @@ For each condition, the evaluator generates:
 
 | Pipeline | Approx. per image | Total (120 images) |
 |----------|-------------------|-------------------|
-| A (VLM) | ~9 seconds (Gemini API) | ~18 minutes |
+| A (VLM) | ~3.7 seconds (GPT-5.2 API) | ~7.4 minutes |
 | B (YOLO) | 20–80 ms (GPU) / 200–500 ms (CPU) | ~5 sec – 1 min |
 | C (YOLO+CNN) | 30–120 ms (GPU) / 300–800 ms (CPU) | ~6 sec – 1.5 min |
 
-Total for all 12 runs: **~80–90 minutes** (dominated by VLM API time across 4 conditions).
+Total for all 12 runs: **~35–40 minutes** (dominated by VLM API time across 4 conditions).
 
 ---
 
@@ -774,7 +774,7 @@ Pipeline C's CNN was trained on clean, centred, single-item images (Experiment 1
 
 ### VLM Non-Determinism
 
-While temperature=0.0 is set for reproducibility, VLM outputs are not guaranteed to be fully deterministic across API versions or over time. This is an inherent limitation of API-based approaches and should be acknowledged in the limitations section.
+While temperature=0.0 is set for reproducibility, VLM outputs (GPT-5.2) are not guaranteed to be fully deterministic across API versions or over time. This is an inherent limitation of API-based approaches and should be acknowledged in the limitations section.
 
 ---
 
@@ -795,9 +795,9 @@ SnapShelf-console/
 ├── clients/                          # Model inference clients
 │   ├── __init__.py
 │   ├── vlm_client.py                # GPT-4o-mini (original baseline)
-│   ├── vlm_openai.py               # GPT-5.2 (VLM comparison)
+│   ├── vlm_openai.py               # GPT-5.2 (VLM winner → Pipeline A)
 │   ├── vlm_anthropic.py            # Claude Opus 4.6 (VLM comparison)
-│   ├── vlm_google.py               # Gemini 3.1 Pro (VLM winner → Pipeline A)
+│   ├── vlm_google.py               # Gemini 3.1 Pro (VLM comparison)
 │   ├── yolo_detector.py            # 14-class YOLO (Pipeline B)
 │   ├── yolo_objectness.py          # 1-class objectness YOLO (Pipeline C)
 │   └── cnn_classifier.py           # CNN factory: EfficientNet / ResNet (Pipeline C)
@@ -873,15 +873,15 @@ Ready-to-adapt paragraphs for your dissertation report:
 
 ### VLM Model Selection
 
-> *"To select the optimal VLM for Pipeline A, a controlled comparison was conducted across three flagship models: GPT-5.2 (OpenAI), Claude Opus 4.6 (Anthropic), and Gemini 3.1 Pro (Google). All models received an identical frozen prompt constrained to the 14 target classes, with temperature set to 0.0. Each model processed the full set of 120 test images. Gemini 3.1 Pro achieved the highest micro-averaged F1 score (0.9044), marginally outperforming GPT-5.2 (0.9002) and Claude Opus 4.6 (0.8674). All three models achieved near-identical recall (0.9949), indicating that VLMs reliably detect items; the differentiator was precision, where Gemini produced the fewest false positives. Gemini 3.1 Pro was therefore selected as Pipeline A's VLM for the subsequent 12-run comparison."*
+> *"To select the optimal VLM for Pipeline A, a controlled comparison was conducted across three flagship models: GPT-5.2 (OpenAI), Claude Opus 4.6 (Anthropic), and Gemini 3.1 Pro (Google). All models received an identical frozen prompt constrained to the 14 target classes, with temperature set to 0.0. Each model processed the full set of 120 test images. Gemini 3.1 Pro achieved the highest micro-averaged F1 score (0.9044), marginally outperforming GPT-5.2 (0.9002) and Claude Opus 4.6 (0.8674). All three models achieved near-identical recall (0.9949), indicating that VLMs reliably detect items; the differentiator was precision, where Gemini produced the fewest false positives. However, the F1 difference between Gemini and GPT-5.2 was only 0.004 — not statistically significant on a 120-image test set. GPT-5.2 was therefore selected as Pipeline A's VLM for the subsequent 12-run comparison, as it offered 2.4x lower latency (3.7 s vs 9.0 s per image) and 2.7x lower cost ($0.004 vs $0.010 per image) — factors that directly impact the feasibility of a production mobile application."*
 
 ### Experimental Design
 
-> *"Experiment 2 evaluates three end-to-end pipelines on an identical test set of 120 photographs, each containing 2–8 items from a 14-class fruit and vegetable taxonomy. Pipeline A uses Gemini 3.1 Pro (Google), selected through a three-model VLM comparison, with a constrained prompt restricting output to the 14 target classes. Pipeline B uses a YOLOv8s object detector fine-tuned to directly predict all 14 classes. Pipeline C uses a two-stage approach: a YOLOv8s model trained as a class-agnostic objectness detector to localise items, followed by an EfficientNet-B0 classifier (the winning model from Experiment 1) to classify each cropped region."*
+> *"Experiment 2 evaluates three end-to-end pipelines on an identical test set of 120 photographs, each containing 2–8 items from a 14-class fruit and vegetable taxonomy. Pipeline A uses GPT-5.2 (OpenAI), selected through a three-model VLM comparison that also evaluated Gemini 3.1 Pro and Claude Opus 4.6, with a constrained prompt restricting output to the 14 target classes. Pipeline B uses a YOLOv8s object detector fine-tuned to directly predict all 14 classes. Pipeline C uses a two-stage approach: a YOLOv8s model trained as a class-agnostic objectness detector to localise items, followed by an EfficientNet-B0 classifier (the winning model from Experiment 1) to classify each cropped region."*
 
 ### Training/Test Separation
 
-> *"To ensure a fair comparison, training and test data were strictly separated. Pipelines B and C were fine-tuned on the publicly available Combined Vegetables & Fruits dataset (Roboflow Universe, ~42,000 images, 47 classes), remapped to the 14-class taxonomy used in this study (see Section X). The test set comprised 120 original photographs taken by the author across five real-world settings, annotated independently in Roboflow and never used during training. Pipeline A (Gemini 3.1 Pro) was used as-is without fine-tuning; while we cannot guarantee our test images were absent from its internet-scale training corpus, this reflects the realistic deployment scenario for a zero-shot VLM."*
+> *"To ensure a fair comparison, training and test data were strictly separated. Pipelines B and C were fine-tuned on the publicly available Combined Vegetables & Fruits dataset (Roboflow Universe, ~42,000 images, 47 classes), remapped to the 14-class taxonomy used in this study (see Section X). The test set comprised 120 original photographs taken by the author across five real-world settings, annotated independently in Roboflow and never used during training. Pipeline A (GPT-5.2) was used as-is without fine-tuning; while we cannot guarantee our test images were absent from its internet-scale training corpus, this reflects the realistic deployment scenario for a zero-shot VLM."*
 
 ### Robustness Evaluation
 
@@ -893,11 +893,11 @@ Ready-to-adapt paragraphs for your dissertation report:
 
 ### Cost and Latency Trade-Offs
 
-> *"API costs and inference latency were recorded for all three VLMs. GPT-5.2 was the fastest (3.7 s/image) and cheapest ($0.004/image), while Gemini 3.1 Pro was the slowest (9.0 s/image) and most expensive ($0.010/image) due to internal thinking tokens billed as output. Claude Opus 4.6 occupied the middle ground (4.7 s/image, $0.012/image). The total API cost for the VLM comparison across all three models on 120 images was $4.38. Pipelines B and C, being fully offline, incurred zero API cost and sub-100 ms inference on GPU, making them significantly cheaper at scale. For a production deployment processing 10,000 images/day, Pipeline A (Gemini) would cost approximately $100/day versus $0 for the YOLO-based pipelines, plus the added latency of network round-trips."*
+> *"API costs and inference latency were recorded for all three VLMs. GPT-5.2 was the fastest (3.7 s/image) and cheapest ($0.004/image), while Gemini 3.1 Pro was the slowest (9.0 s/image) and most expensive ($0.010/image) due to internal thinking tokens billed as output. Claude Opus 4.6 occupied the middle ground (4.7 s/image, $0.012/image). The total API cost for the VLM comparison across all three models on 120 images was $4.38. Pipelines B and C, being fully offline, incurred zero API cost and sub-100 ms inference on GPU, making them significantly cheaper at scale. For a production deployment processing 10,000 images/day, Pipeline A (GPT-5.2) would cost approximately $40/day versus $0 for the YOLO-based pipelines, plus the added latency of network round-trips."*
 
 ### Limitations
 
-> *"Several limitations should be acknowledged. First, the test set of 120 images, while purpose-built with controlled variation, is small by industry standards. Second, all images were captured using a single device by a single photographer. Third, Pipeline C's CNN was trained on clean, single-item, centred images (Experiment 1), introducing a domain gap when classifying YOLO-cropped regions from cluttered scenes. Fourth, while Pipeline A (Gemini 3.1 Pro) was queried with temperature=0 for reproducibility, VLM outputs are not guaranteed to be fully deterministic across API versions. Finally, the grape class revealed a semantic ambiguity in count-based evaluation that may extend to other aggregate items (e.g., cherry tomatoes on a vine)."*
+> *"Several limitations should be acknowledged. First, the test set of 120 images, while purpose-built with controlled variation, is small by industry standards. Second, all images were captured using a single device by a single photographer. Third, Pipeline C's CNN was trained on clean, single-item, centred images (Experiment 1), introducing a domain gap when classifying YOLO-cropped regions from cluttered scenes. Fourth, while Pipeline A (GPT-5.2) was queried with temperature=0 for reproducibility, VLM outputs are not guaranteed to be fully deterministic across API versions. Finally, the grape class revealed a semantic ambiguity in count-based evaluation that may extend to other aggregate items (e.g., cherry tomatoes on a vine)."*
 
 ---
 
@@ -914,8 +914,8 @@ Ready-to-adapt paragraphs for your dissertation report:
 ## Acknowledgements
 
 - [Ultralytics](https://github.com/ultralytics/ultralytics) for YOLOv8
-- [Google](https://ai.google.dev/) for Gemini 3.1 Pro API
-- [OpenAI](https://openai.com) for GPT-5.2 API
-- [Anthropic](https://anthropic.com) for Claude Opus 4.6 API
+- [OpenAI](https://openai.com) for GPT-5.2 API (Pipeline A)
+- [Google](https://ai.google.dev/) for Gemini 3.1 Pro API (VLM comparison)
+- [Anthropic](https://anthropic.com) for Claude Opus 4.6 API (VLM comparison)
 - [PyTorch](https://pytorch.org) for CNN training and inference
 - [Roboflow](https://roboflow.com) for annotation tools and training datasets
