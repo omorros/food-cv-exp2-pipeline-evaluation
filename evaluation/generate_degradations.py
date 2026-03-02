@@ -2,9 +2,9 @@
 Generate degraded image variants for robustness testing.
 
 Applies three degradations to the clean test images:
-  D1: Gaussian blur    (kernel=7, sigma=3.0)  — out-of-focus camera
-  D2: Gaussian noise   (mean=0, sigma=25)     — low-light sensor noise
-  D3: JPEG compression (quality=15)           — messaging app compression
+  D1: Gaussian blur    (kernel=15, sigma=6.0)  — out-of-focus camera
+  D2: Gaussian noise   (mean=0, sigma=50)      — low-light sensor noise
+  D3: JPEG compression (quality=5)             — messaging app compression
 
 Usage:
     python -m evaluation.generate_degradations \
@@ -22,19 +22,19 @@ from config import set_reproducibility_seed
 
 
 def apply_blur(image: np.ndarray) -> np.ndarray:
-    """D1: Gaussian blur (kernel=7, sigma=3.0)."""
-    return cv2.GaussianBlur(image, (7, 7), 3.0)
+    """D1: Gaussian blur (kernel=15, sigma=6.0)."""
+    return cv2.GaussianBlur(image, (15, 15), 6.0)
 
 
 def apply_noise(image: np.ndarray) -> np.ndarray:
-    """D2: Gaussian noise (mean=0, sigma=25)."""
-    noise = np.random.normal(0, 25, image.shape).astype(np.float32)
+    """D2: Gaussian noise (mean=0, sigma=50)."""
+    noise = np.random.normal(0, 50, image.shape).astype(np.float32)
     noisy = np.clip(image.astype(np.float32) + noise, 0, 255)
     return noisy.astype(np.uint8)
 
 
-def apply_jpeg(image: np.ndarray, quality: int = 15) -> np.ndarray:
-    """D3: JPEG compression (quality=15)."""
+def apply_jpeg(image: np.ndarray, quality: int = 5) -> np.ndarray:
+    """D3: JPEG compression (quality=5)."""
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
     _, encoded = cv2.imencode(".jpg", image, encode_params)
     return cv2.imdecode(encoded, cv2.IMREAD_COLOR)
@@ -43,9 +43,9 @@ def apply_jpeg(image: np.ndarray, quality: int = 15) -> np.ndarray:
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 DEGRADATIONS = {
-    "images_d1_blur":  ("D1: Gaussian blur (kernel=7, sigma=3.0)", apply_blur),
-    "images_d2_noise": ("D2: Gaussian noise (sigma=25)", apply_noise),
-    "images_d3_jpeg":  ("D3: JPEG compression (quality=15)", apply_jpeg),
+    "images_d1_blur":  ("D1: Gaussian blur (kernel=15, sigma=6.0)", apply_blur),
+    "images_d2_noise": ("D2: Gaussian noise (sigma=50)", apply_noise),
+    "images_d3_jpeg":  ("D3: JPEG compression (quality=5)", apply_jpeg),
 }
 
 
