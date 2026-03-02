@@ -85,7 +85,7 @@ class ExperimentConfig:
 
     # --- CNN Settings (Pipeline C) ---
     cnn_model_name: str = "efficientnet"  # efficientnet | resnet | custom
-    cnn_weights: str = "weights/cnn_winner.pth"
+    cnn_weights: str = "weights/cnn_winner.keras"
     cnn_img_size: int = 224
     cnn_crop_padding: float = 0.10
 
