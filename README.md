@@ -15,15 +15,20 @@
 6. [Training Data](#training-data)
 7. [Test Data and Annotation](#test-data-and-annotation)
 8. [Robustness Testing (Image Degradations)](#robustness-testing-image-degradations)
-9. [Installation](#installation)
-10. [Usage](#usage)
-11. [Training](#training)
-12. [Evaluation — The 12-Run Matrix](#evaluation--the-12-run-matrix)
-13. [Output Schema](#output-schema)
-14. [Configuration](#configuration)
-15. [Reproducibility](#reproducibility)
-16. [Key Findings and Discussion Points](#key-findings-and-discussion-points)
-17. [Project Structure](#project-structure)
+9. [Results — The 12-Run Matrix](#results--the-12-run-matrix)
+10. [Cross-Condition Analysis](#cross-condition-analysis)
+11. [Per-Class Analysis](#per-class-analysis)
+12. [Key Findings and Discussion Points](#key-findings-and-discussion-points)
+13. [Installation](#installation)
+14. [Usage](#usage)
+15. [Training](#training)
+16. [Evaluation Commands](#evaluation-commands)
+17. [Output Schema](#output-schema)
+18. [Configuration](#configuration)
+19. [Reproducibility](#reproducibility)
+20. [Generated Visualizations](#generated-visualizations)
+21. [Project Structure](#project-structure)
+22. [Dissertation Methodology Text](#dissertation-methodology-text)
 
 ---
 
@@ -349,6 +354,40 @@ python -m training.prepare_objectness_labels --src dataset --dst dataset_objectn
 
 This keeps the same bounding box coordinates but tells YOLO "there's *something* here" instead of "there's an *apple* here."
 
+### YOLO Training Details
+
+Both YOLO models were trained on Google Colab (T4 GPU) using the `training/train_colab.ipynb` notebook.
+
+| Setting | 14-Class YOLO (Pipeline B) | Objectness YOLO (Pipeline C) |
+|---------|:-------------------------:|:----------------------------:|
+| Base model | YOLOv8s (COCO pretrained) | YOLOv8s (COCO pretrained) |
+| Epochs | 100 | 100 |
+| Batch size | Auto (`batch=-1`) | Auto (`batch=-1`) |
+| Image size | 640 | 640 |
+| Learning rate | 0.01 | 0.01 |
+| Early stopping | 15 epochs patience | 15 epochs patience |
+| Training images | 19,356 | 19,356 |
+| Validation images | 2,602 | 2,602 |
+| Classes | 14 | 1 ("object") |
+| Training time | ~13h on T4 | ~10h on T4 |
+| Checkpoint saves | Every 10 epochs + best.pt to Google Drive | Every 10 epochs + best.pt to Google Drive |
+
+### CNN Weights (Pipeline C — from Experiment 1)
+
+The CNN classifier used in Pipeline C is the **EfficientNet-B0 winner from Experiment 1**, loaded directly as a `.keras` file.
+
+| Property | Value |
+|----------|-------|
+| Architecture | EfficientNet-B0 (transfer learning) |
+| Framework | TensorFlow / Keras 3.10.0 |
+| Input size | 224 × 224 × 3 |
+| Preprocessing | `tf.keras.applications.efficientnet.preprocess_input` (scales to [-1, 1]) |
+| Output | 14-class softmax |
+| Layers | `EfficientNetB0(include_top=False)` → `GlobalAvgPool` → `BatchNorm` → `Dropout(0.3)` → `Dense(14, softmax)` |
+| Training data | Experiment 1 single-item cropped images (different from Exp 2 training data) |
+| File | `weights/cnn_winner.keras` (41 MB) |
+| Keras version pin | Must match Keras 3.10.0 (pinned in `requirements.txt`) |
+
 ---
 
 ## Test Data and Annotation
@@ -382,6 +421,10 @@ Each `.txt` file contains one line per object:
 <class_id> <x_center> <y_center> <width> <height>
 ```
 All coordinates normalised to [0, 1]. Class IDs are 0–13 matching the 14-class taxonomy.
+
+### Ground Truth Distribution
+
+Total annotated items across 120 images: **585 objects**.
 
 ---
 
@@ -420,6 +463,234 @@ dataset_exp2/
 ```
 
 Labels are shared across all conditions because degradation does not move or change the objects — only image quality changes.
+
+---
+
+## Results — The 12-Run Matrix
+
+> **All 12 runs completed successfully.** 3 pipelines × 4 image conditions = 12 evaluation runs on 120 test images each (1,440 total inferences).
+
+### Summary Table
+
+| Condition | Pipeline | Precision | Recall | F1 | Avg Latency (ms) |
+|-----------|----------|:---------:|:------:|:--:|:-----------------:|
+| **Clean** | YOLO-14 | 0.5807 | 0.6274 | **0.6031** | 485.9 |
+| **Clean** | VLM (GPT-5.2) | 0.8209 | 0.9949 | **0.8995** | 4,366.4 |
+| **Clean** | YOLO + CNN | 0.5324 | 0.5624 | **0.5470** | 983.3 |
+| **D1 Blur** | YOLO-14 | 0.6125 | 0.7026 | **0.6545** | 195.5 |
+| **D1 Blur** | VLM (GPT-5.2) | 0.8149 | 0.9932 | **0.8952** | 2,619.1 |
+| **D1 Blur** | YOLO + CNN | 0.4707 | 0.5214 | **0.4947** | 930.9 |
+| **D2 Noise** | YOLO-14 | 0.4720 | 0.1726 | **0.2528** | 507.5 |
+| **D2 Noise** | VLM (GPT-5.2) | 0.7975 | 0.9761 | **0.8778** | 10,701.5 |
+| **D2 Noise** | YOLO + CNN | 0.5455 | 0.2769 | **0.3673** | 1,340.1 |
+| **D3 JPEG** | YOLO-14 | 0.5876 | 0.4530 | **0.5116** | 172.5 |
+| **D3 JPEG** | VLM (GPT-5.2) | 0.7918 | 0.9556 | **0.8660** | 2,333.5 |
+| **D3 JPEG** | YOLO + CNN | 0.5444 | 0.4923 | **0.5171** | 955.8 |
+
+### F1 Score by Pipeline Across All Conditions
+
+![F1 Degradation Lines](docs/figures/f1_degradation_lines.png)
+
+### Condition-by-Condition Breakdown
+
+#### Clean Condition (Baseline)
+
+| Pipeline | Precision | Recall | F1 | TP | FP | FN | Avg ms |
+|----------|:---------:|:------:|:--:|:--:|:--:|:--:|:------:|
+| YOLO-14 | 0.5807 | 0.6274 | 0.6031 | 367 | 265 | 218 | 485.9 |
+| VLM (GPT-5.2) | 0.8209 | 0.9949 | 0.8995 | 582 | 127 | 3 | 4,366.4 |
+| YOLO + CNN | 0.5324 | 0.5624 | 0.5470 | 329 | 289 | 256 | 983.3 |
+
+- VLM achieves near-perfect recall (99.5%) — it finds almost everything
+- VLM's 127 FP are almost entirely from the grape class (126 FP)
+- YOLO-14 misses 218 items (37% of ground truth), mainly peach (43 FN), onion (37 FN), potato (37 FN)
+- YOLO+CNN's 289 FP are dominated by apple misclassification (182 FP)
+
+#### D1: Gaussian Blur
+
+| Pipeline | Precision | Recall | F1 | TP | FP | FN | Avg ms |
+|----------|:---------:|:------:|:--:|:--:|:--:|:--:|:------:|
+| YOLO-14 | 0.6125 | 0.7026 | 0.6545 | 411 | 260 | 174 | 195.5 |
+| VLM (GPT-5.2) | 0.8149 | 0.9932 | 0.8952 | 581 | 132 | 4 | 2,619.1 |
+| YOLO + CNN | 0.4707 | 0.5214 | 0.4947 | 305 | 343 | 280 | 930.9 |
+
+- **YOLO-14 actually improved** under blur (F1: 0.6031 → 0.6545, +0.051). This is a notable finding — blur may smooth out noise/texture that causes false detections on sharp images.
+- VLM barely affected (F1: 0.8995 → 0.8952, −0.004)
+- YOLO+CNN slightly degraded (F1: 0.5470 → 0.4947, −0.052)
+
+#### D2: Gaussian Noise
+
+| Pipeline | Precision | Recall | F1 | TP | FP | FN | Avg ms |
+|----------|:---------:|:------:|:--:|:--:|:--:|:--:|:------:|
+| YOLO-14 | 0.4720 | 0.1726 | 0.2528 | 101 | 113 | 484 | 507.5 |
+| VLM (GPT-5.2) | 0.7975 | 0.9761 | 0.8778 | 571 | 145 | 14 | 10,701.5 |
+| YOLO + CNN | 0.5455 | 0.2769 | 0.3673 | 162 | 135 | 423 | 1,340.1 |
+
+- **Noise is the most destructive degradation.** YOLO-14 F1 crashed from 0.6031 → 0.2528 (−0.350). It only found 101 of 585 items.
+- YOLO+CNN also severely affected (F1: 0.5470 → 0.3673, −0.180)
+- **VLM remains remarkably robust** (F1: 0.8995 → 0.8778, −0.022), still finding 571 of 585 items
+- VLM latency spiked to **10.7 seconds/image** (vs 4.4s on clean) — the noisy images produce larger encoded payloads
+- YOLO-14 recall dropped to just 17.3% — it missed 484 out of 585 items
+
+#### D3: JPEG Compression (quality=5)
+
+| Pipeline | Precision | Recall | F1 | TP | FP | FN | Avg ms |
+|----------|:---------:|:------:|:--:|:--:|:--:|:--:|:------:|
+| YOLO-14 | 0.5876 | 0.4530 | 0.5116 | 265 | 186 | 320 | 172.5 |
+| VLM (GPT-5.2) | 0.7918 | 0.9556 | 0.8660 | 559 | 147 | 26 | 2,333.5 |
+| YOLO + CNN | 0.5444 | 0.4923 | 0.5171 | 288 | 241 | 297 | 955.8 |
+
+- Moderate impact on offline pipelines: YOLO-14 F1 dropped to 0.5116 (−0.091), YOLO+CNN to 0.5171 (−0.030)
+- VLM moderately affected (F1: 0.8995 → 0.8660, −0.033) but still dominant
+- Interesting: YOLO+CNN actually matches YOLO-14 under JPEG compression (0.5171 vs 0.5116)
+- VLM latency was fastest here (2,333 ms) — highly compressed images are smaller payloads
+
+---
+
+## Cross-Condition Analysis
+
+### F1 Degradation Impact
+
+The chart below shows the F1 drop from the clean baseline for each degradation:
+
+![F1 Delta Degradation](docs/figures/f1_delta_degradation.png)
+
+| Degradation | YOLO-14 F1 Drop | VLM F1 Drop | YOLO+CNN F1 Drop |
+|-------------|:---------------:|:-----------:|:----------------:|
+| D1: Blur | **+0.051** (improved) | −0.004 | −0.052 |
+| D2: Noise | **−0.350** | −0.022 | −0.180 |
+| D3: JPEG | −0.091 | −0.033 | −0.030 |
+
+**Key insight:** The VLM's maximum F1 drop across all degradations was just 0.033, while YOLO-14's maximum drop was 0.350 — the VLM is **10x more robust** to image quality degradation.
+
+### Speed–Accuracy Tradeoff
+
+![Latency vs F1 Scatter](docs/figures/latency_vs_f1_scatter.png)
+
+| Pipeline | Latency Range (across conditions) | F1 Range | Cost per Image |
+|----------|:---------------------------------:|:--------:|:--------------:|
+| YOLO-14 | 172 – 508 ms | 0.253 – 0.654 | $0.00 |
+| VLM (GPT-5.2) | 2,333 – 10,702 ms | 0.866 – 0.900 | $0.004 |
+| YOLO + CNN | 931 – 1,340 ms | 0.367 – 0.547 | $0.00 |
+
+The VLM is **5–50x slower** but achieves **1.3–3.5x higher F1**. For a mobile app where API cost is acceptable, the VLM is the clear winner. For offline/edge deployment, YOLO-14 is the best option.
+
+---
+
+## Per-Class Analysis
+
+### Per-Class F1 Heatmap (Clean Condition)
+
+![Per-Class F1 Heatmap](docs/figures/perclass_f1_heatmap_clean.png)
+
+### Per-Class F1 Grouped Bars (Clean Condition)
+
+![Per-Class F1 Bars](docs/figures/perclass_f1_bars_clean.png)
+
+### Per-Class F1 (Clean) — Full Table
+
+| Class | YOLO-14 F1 | VLM F1 | YOLO+CNN F1 | Notes |
+|-------|:----------:|:------:|:-----------:|-------|
+| apple | 0.578 | **1.000** | 0.367 | YOLO+CNN has 182 FP (misclassifies other items as apple) |
+| banana | **0.966** | **1.000** | 0.785 | Strong across all pipelines |
+| bell_pepper_green | 0.651 | **1.000** | 0.129 | YOLO+CNN recall only 6.9% |
+| bell_pepper_red | 0.704 | **1.000** | 0.478 | |
+| carrot | **0.966** | 0.989 | 0.831 | YOLO-14 nearly matches VLM |
+| cucumber | 0.717 | **1.000** | 0.381 | |
+| grape | 0.432 | 0.400 | 0.500 | Problematic for all — semantic ambiguity |
+| lemon | 0.650 | **0.977** | 0.712 | |
+| onion | 0.245 | **1.000** | 0.567 | YOLO-14 recall only 14% |
+| orange | 0.488 | **0.990** | 0.551 | YOLO-14 has 102 FP (overcounts oranges) |
+| peach | **0.000** | **1.000** | 0.377 | YOLO-14 completely fails — 0 TP, 43 FN |
+| potato | 0.098 | **1.000** | 0.050 | Near-zero for both offline pipelines |
+| strawberry | 0.862 | **1.000** | 0.987 | YOLO+CNN excels here |
+| tomato | 0.817 | **1.000** | 0.694 | |
+
+### Worst-Performing Classes by Pipeline
+
+**YOLO-14 blind spots:** peach (F1=0.000), potato (F1=0.098), onion (F1=0.245). These classes have few/no detections — the model likely confuses them with similar-looking items (peach↔apple, potato↔onion).
+
+**YOLO+CNN blind spots:** potato (F1=0.050), bell_pepper_green (F1=0.129). The CNN struggles with items that look different when cropped from a scene vs. the clean single-item training data (domain gap).
+
+**VLM blind spots:** grape (F1=0.400) — the only class below 0.95. The VLM counts individual berries instead of clusters. All other classes are at 0.977 or above.
+
+### Full Heatmap — All Pipelines × All Conditions
+
+![Per-Class F1 Heatmap All](docs/figures/perclass_f1_heatmap_all.png)
+
+This 12-row × 14-column heatmap is the complete picture of the experiment. Each cell shows the per-class F1 for one pipeline under one condition. Key patterns:
+- **VLM rows stay green** across all conditions — consistently high performance
+- **YOLO-14 Noise row turns red** — noise destroys detection capability
+- **Potato column is red** for offline pipelines — consistently missed
+- **Banana and strawberry columns are green** for all — easy classes
+
+### Confusion Matrices (Clean Condition)
+
+#### YOLO-14 Confusion Matrix
+![YOLO-14 Confusion](docs/figures/yolo-14_confusion.png)
+
+#### VLM Confusion Matrix
+![VLM Confusion](docs/figures/vlm_confusion.png)
+
+#### YOLO+CNN Confusion Matrix
+![YOLO+CNN Confusion](docs/figures/yolo-cnn_confusion.png)
+
+---
+
+## Key Findings and Discussion Points
+
+### Answer to Research Questions
+
+**RQ1: Which VLM is best?** Gemini 3.1 Pro scored highest F1 (0.9044), but GPT-5.2 was selected (F1=0.9002) for 2.4x lower latency and 2.7x lower cost. The 0.004 F1 difference is not statistically significant on 120 images.
+
+**RQ2: Does YOLO outperform the VLM?** No. The VLM (F1=0.8995) significantly outperforms YOLO-14 (F1=0.6031) on clean images. The gap widens under degradation.
+
+**RQ3: Does detect-then-classify help?** No. YOLO+CNN (F1=0.5470) performs worse than YOLO-14 (F1=0.6031) due to the domain gap between single-item training crops and multi-item scene crops.
+
+**RQ4: How robust is each pipeline?** The VLM is remarkably robust (max F1 drop: 0.033). YOLO-14 is fragile to noise (F1 drop: 0.350). YOLO+CNN is moderately fragile (max F1 drop: 0.180).
+
+**RQ5: What are the trade-offs?** VLM: highest accuracy, highest robustness, highest latency (~2–11s), requires API ($0.004/image). YOLO-14: fast (172–508ms), free, offline, but lower accuracy and fragile. YOLO+CNN: moderate speed, free, offline, lowest accuracy.
+
+### The Grape Semantic Ambiguity
+
+All three VLMs exhibited the same systematic error on the `grape` class. The test annotations treated **1 grape cluster = 1 unit**, but VLMs interpreted each **individual grape berry** as a separate item (reporting 4–6 per cluster instead of 1).
+
+| Model | Grape FP | Grape Precision | Impact on Overall F1 |
+|-------|----------|-----------------|---------------------|
+| Gemini 3.1 Pro | 119 | 0.261 | Drops F1 from ~0.99 to 0.90 |
+| GPT-5.2 | 126 | 0.250 | Drops F1 from ~0.99 to 0.90 |
+| Claude Opus 4.6 | 174 | 0.194 | Drops F1 from ~0.99 to 0.87 |
+
+**This is not a bug — it is a semantic ambiguity.** Neither interpretation is wrong. This is a valuable finding for the dissertation, revealing a fundamental challenge in VLM-based counting: the model and the annotator may have different definitions of "one unit."
+
+**Recommendation for the dissertation:** Report results both **with** and **without** the grape class. Without grape, all three VLMs achieve ~98–99% F1, demonstrating the approach works excellently for unambiguously defined items.
+
+### YOLO-14 Improvement Under Blur (+0.051 F1)
+
+An unexpected finding: YOLO-14's F1 **improved** from 0.6031 (clean) to 0.6545 (blur). This may be because Gaussian blur smooths high-frequency noise and edge artifacts that trigger false detections on sharp images. The model finds more true positives (411 vs 367) with fewer false negatives (174 vs 218) under blur, while false positives remain similar (260 vs 265). This is worth discussing as evidence that over-sharpening training images may not always help detection models.
+
+### Noise as the Critical Vulnerability
+
+Gaussian noise (sigma=50) is the most destructive degradation:
+- **YOLO-14:** F1 crashed from 0.6031 → 0.2528 (−58% relative drop). Recall collapsed to 17.3%.
+- **YOLO+CNN:** F1 dropped from 0.5470 → 0.3673 (−33% relative drop). Recall dropped to 27.7%.
+- **VLM:** F1 dropped only from 0.8995 → 0.8778 (−2.4% relative drop). Recall stayed at 97.6%.
+
+This suggests that for real-world mobile deployment, a denoising preprocessing step would significantly benefit the offline pipelines. Alternatively, training with noise augmentation could improve robustness.
+
+### VLM Latency Spike on Noisy Images
+
+VLM average latency increased from 4,366 ms (clean) to **10,702 ms (noise)** — a 2.5x spike. This is because noisy images have higher entropy, resulting in larger base64-encoded payloads sent to the API, and potentially more reasoning tokens consumed. This is a practical consideration for production deployment.
+
+### Domain Gap (Pipeline C)
+
+Pipeline C's CNN was trained on clean, centred, single-item images (Experiment 1), but receives YOLO-cropped regions from multi-item real-world scenes. These crops may include partial objects, background clutter, or unusual angles. This **domain gap** is expected and is a legitimate finding — it reveals a real limitation of the detect-then-classify approach.
+
+Evidence: YOLO+CNN has 182 FP for apple (clean condition) — the CNN misclassifies many cropped regions as apple. The model defaults to its most frequent training class when uncertain.
+
+### VLM Non-Determinism
+
+While temperature=0.0 is set for reproducibility, VLM outputs (GPT-5.2) are not guaranteed to be fully deterministic across API versions or over time. This is an inherent limitation of API-based approaches and should be acknowledged in the limitations section.
 
 ---
 
@@ -474,13 +745,23 @@ Core dependencies (`requirements.txt`):
 
 ```
 ultralytics==8.3.57       # YOLOv8 (Pipelines B & C)
+tensorflow>=2.15.0        # CNN classifier (Pipeline C)
+keras==3.10.0             # Must match Experiment 1 model version
 openai>=1.59.9            # GPT-5.2 VLM client
 anthropic>=0.40.0         # Claude Opus 4.6 VLM client
 google-genai>=1.0.0       # Gemini 3.1 Pro VLM client
+torch>=2.1.0              # PyTorch (alternative CNN path)
+torchvision>=0.16.0       # PyTorch vision transforms
 pillow==11.1.0            # Image processing
 numpy==2.2.2              # Numerical computing
+scikit-learn>=1.4.0       # Evaluation utilities
+pandas>=2.1.0             # Data handling
+matplotlib>=3.8.0         # Chart generation
+seaborn>=0.13.0           # Heatmaps and statistical plots
 rich==13.9.4              # Console formatting
-python-dotenv             # .env file loading
+python-dotenv==1.0.1      # .env file loading
+pyyaml>=6.0               # YAML config generation
+structlog==24.4.0         # Structured logging
 ```
 
 ---
@@ -506,6 +787,9 @@ python main.py train yolo-obj            # Train objectness YOLO
 python -m evaluation.vlm_comparison \
     --images dataset_exp2/images \
     --labels dataset_exp2/labels
+
+# Generate cross-condition charts
+python -m evaluation.generate_charts
 
 # Utility
 python main.py --validate                # Verify environment and display config
@@ -533,18 +817,6 @@ python main.py train yolo-14
 python main.py train yolo-obj
 ```
 
-**Default hyperparameters** (from `config.py`):
-
-| Setting | Value |
-|---------|-------|
-| Base model | YOLOv8s (pre-trained on COCO) |
-| Epochs | 100 |
-| Batch size | 16 |
-| Image size | 640 |
-| Learning rate | 0.01 |
-| Early stopping | 15 epochs patience |
-| Random seed | 42 |
-
 ### Option 2: Google Colab Training (no local GPU)
 
 A Colab notebook is provided for training on a free T4 GPU:
@@ -552,8 +824,8 @@ A Colab notebook is provided for training on a free T4 GPU:
 1. Upload `dataset_14class.zip` and `dataset_objectness.zip` to Google Drive under `SnapShelf/`
 2. Open `training/train_colab.ipynb` in Google Colab
 3. Set runtime to **GPU (T4)**
-4. Run all cells — trains both YOLO models sequentially
-5. Download trained weights from `SnapShelf/weights/` in Google Drive
+4. Run all cells — trains both YOLO models sequentially, saving directly to Google Drive
+5. Download trained weights from `SnapShelf/results/` in Google Drive
 
 ### After Training
 
@@ -562,8 +834,8 @@ A Colab notebook is provided for training on a free T4 GPU:
 ls weights/yolo_14class_best.pt       # 14-class YOLO (Pipeline B)
 ls weights/yolo_objectness_best.pt    # Objectness YOLO (Pipeline C)
 
-# Copy CNN weights from Experiment 1
-cp /path/to/experiment1/best_efficientnet.pth weights/cnn_winner.keras
+# CNN weights from Experiment 1
+ls weights/cnn_winner.keras           # EfficientNet-B0 (Pipeline C)
 
 # Smoke test
 python main.py yolo-14 dataset_exp2/images/IMG_001.jpg
@@ -572,30 +844,11 @@ python main.py yolo-cnn dataset_exp2/images/IMG_001.jpg
 
 ---
 
-## Evaluation — The 12-Run Matrix
+## Evaluation Commands
 
-### The Matrix
+### The 12-Run Matrix
 
-3 pipelines x 4 image conditions = **12 evaluation runs**.
-
-| Run | Pipeline | Condition | Images Folder |
-|:---:|----------|-----------|---------------|
-| 1 | A (VLM) | Clean | `dataset_exp2/images` |
-| 2 | A (VLM) | D1: Blur | `dataset_exp2/images_d1_blur` |
-| 3 | A (VLM) | D2: Noise | `dataset_exp2/images_d2_noise` |
-| 4 | A (VLM) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
-| 5 | B (YOLO) | Clean | `dataset_exp2/images` |
-| 6 | B (YOLO) | D1: Blur | `dataset_exp2/images_d1_blur` |
-| 7 | B (YOLO) | D2: Noise | `dataset_exp2/images_d2_noise` |
-| 8 | B (YOLO) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
-| 9 | C (YOLO+CNN) | Clean | `dataset_exp2/images` |
-| 10 | C (YOLO+CNN) | D1: Blur | `dataset_exp2/images_d1_blur` |
-| 11 | C (YOLO+CNN) | D2: Noise | `dataset_exp2/images_d2_noise` |
-| 12 | C (YOLO+CNN) | D3: JPEG | `dataset_exp2/images_d3_jpeg` |
-
-Labels folder is **always** `dataset_exp2/labels` — degradation changes image quality, not object locations.
-
-### Running the 12 Runs
+3 pipelines × 4 image conditions = **12 evaluation runs**.
 
 ```bash
 # Clean images (runs all 3 pipelines)
@@ -623,6 +876,16 @@ python main.py evaluate \
     --output results/d3_jpeg
 ```
 
+### Generate Cross-Condition Charts
+
+After all 4 evaluation runs are complete:
+
+```bash
+python -m evaluation.generate_charts
+```
+
+This reads `comparison_summary.json` from each condition folder and generates 6 publication-quality charts in `results/charts/`.
+
 ### Pre-Flight Checklist
 
 Before running, verify everything is in place:
@@ -631,7 +894,7 @@ Before running, verify everything is in place:
 # Weight files
 ls weights/yolo_14class_best.pt        # Pipeline B
 ls weights/yolo_objectness_best.pt     # Pipeline C
-ls weights/cnn_winner.keras              # Pipeline C (CNN)
+ls weights/cnn_winner.keras            # Pipeline C (CNN)
 
 # API key (Pipeline A)
 echo $OPENAI_API_KEY                   # Should print your key
@@ -657,16 +920,6 @@ For each condition, the evaluator generates:
 | `{pipeline}_predictions.json` | Per-image predicted inventories |
 | `{pipeline}_confusion.png` | Confusion matrix heatmap |
 | `{pipeline}_report.json` | Full metrics, per-class breakdown, error analysis |
-
-### Expected Timing
-
-| Pipeline | Approx. per image | Total (120 images) |
-|----------|-------------------|-------------------|
-| A (VLM) | ~3.7 seconds (GPT-5.2 API) | ~7.4 minutes |
-| B (YOLO) | 20–80 ms (GPU) / 200–500 ms (CPU) | ~5 sec – 1 min |
-| C (YOLO+CNN) | 30–120 ms (GPU) / 300–800 ms (CPU) | ~6 sec – 1.5 min |
-
-Total for all 12 runs: **~35–40 minutes** (dominated by VLM API time across 4 conditions).
 
 ---
 
@@ -711,7 +964,7 @@ All experiment parameters are centralised in `config.py` as a frozen dataclass:
 @dataclass(frozen=True)
 class ExperimentConfig:
     # VLM Settings (Pipeline A)
-    vlm_model: str = "gpt-4o-mini"       # Original baseline; Gemini used via vlm_google.py
+    vlm_model: str = "gpt-4o-mini"       # Original baseline; GPT-5.2 used via vlm_openai.py
     vlm_temperature: float = 0.0
     vlm_max_tokens: int = 500
 
@@ -725,6 +978,7 @@ class ExperimentConfig:
     cnn_model_name: str = "efficientnet"  # efficientnet | resnet | custom
     cnn_img_size: int = 224
     cnn_crop_padding: float = 0.10
+    cnn_weights: str = "weights/cnn_winner.keras"
 
     # Reproducibility
     random_seed: int = 42
@@ -748,33 +1002,36 @@ Every experiment run generates detailed logs in `logs/experiment_{timestamp}.jso
 
 ### Pinned Dependencies
 
-Core dependencies are pinned for reproducibility (see `requirements.txt`).
+Core dependencies are pinned for reproducibility (see `requirements.txt`). Critical pin: `keras==3.10.0` must match the version used to train the Experiment 1 CNN model.
+
+### Keras Version Compatibility
+
+The CNN weights (`cnn_winner.keras`) were saved with Keras 3.10.0 in Experiment 1. Loading with a different Keras version (e.g., 3.12.x) will fail with a `BatchNormalization` layer deserialization error. The `requirements.txt` pins `keras==3.10.0` to prevent this.
 
 ---
 
-## Key Findings and Discussion Points
+## Generated Visualizations
 
-### The Grape Semantic Ambiguity
+All charts are generated from the raw JSON results. To regenerate:
 
-All three VLMs exhibited the same systematic error on the `grape` class. The test annotations treated **1 grape cluster = 1 unit**, but VLMs interpreted each **individual grape berry** as a separate item (reporting 4–6 per cluster instead of 1).
+```bash
+python -m evaluation.generate_charts
+```
 
-| Model | Grape FP | Grape Precision | Impact on Overall F1 |
-|-------|----------|-----------------|---------------------|
-| Gemini 3.1 Pro | 119 | 0.261 | Drops F1 from ~0.99 to 0.90 |
-| GPT-5.2 | 125 | 0.252 | Drops F1 from ~0.99 to 0.90 |
-| Claude Opus 4.6 | 174 | 0.194 | Drops F1 from ~0.99 to 0.87 |
+### Chart Inventory
 
-**This is not a bug — it is a semantic ambiguity.** Neither interpretation is wrong. This is a valuable finding for the dissertation, revealing a fundamental challenge in VLM-based counting: the model and the annotator may have different definitions of "one unit."
+| Chart | File | Description |
+|-------|------|-------------|
+| F1 Degradation Lines | `results/charts/f1_degradation_lines.png` | F1 across 4 conditions, one line per pipeline |
+| F1 Delta Bars | `results/charts/f1_delta_degradation.png` | F1 drop from clean baseline per degradation |
+| Latency vs F1 Scatter | `results/charts/latency_vs_f1_scatter.png` | Speed–accuracy tradeoff, 12 data points |
+| Per-Class F1 Bars | `results/charts/perclass_f1_bars_clean.png` | Grouped bars for all 14 classes (clean) |
+| Per-Class Heatmap (clean) | `results/charts/perclass_f1_heatmap_clean.png` | 3×14 heatmap (clean only) |
+| Per-Class Heatmap (all) | `results/charts/perclass_f1_heatmap_all.png` | 12×14 heatmap (all conditions) |
+| Confusion Matrices | `results/{condition}/{pipeline}_confusion.png` | Per-pipeline confusion matrix per condition |
+| Comparison Bars | `results/{condition}/comparison_bars.png` | P/R/F1 bars per condition |
 
-**Recommendation for the dissertation:** Report results both **with** and **without** the grape class. Without grape, all three VLMs achieve ~98–99% F1, demonstrating the approach works excellently for unambiguous items.
-
-### Domain Gap (Pipeline C)
-
-Pipeline C's CNN was trained on clean, centred, single-item images (Experiment 1), but receives YOLO-cropped regions from multi-item real-world scenes. These crops may include partial objects, background clutter, or unusual angles. This **domain gap** is expected and is a legitimate finding — it reveals a real limitation of the detect-then-classify approach.
-
-### VLM Non-Determinism
-
-While temperature=0.0 is set for reproducibility, VLM outputs (GPT-5.2) are not guaranteed to be fully deterministic across API versions or over time. This is an inherent limitation of API-based approaches and should be acknowledged in the limitations section.
+Copies of the key figures are also stored in `docs/figures/` for Git tracking (since `results/` is gitignored).
 
 ---
 
@@ -800,7 +1057,7 @@ SnapShelf-console/
 │   ├── vlm_google.py               # Gemini 3.1 Pro (VLM comparison)
 │   ├── yolo_detector.py            # 14-class YOLO (Pipeline B)
 │   ├── yolo_objectness.py          # 1-class objectness YOLO (Pipeline C)
-│   └── cnn_classifier.py           # CNN factory: EfficientNet / ResNet (Pipeline C)
+│   └── cnn_classifier.py           # CNN factory: Keras + PyTorch (Pipeline C)
 │
 ├── pipelines/                        # Pipeline orchestration
 │   ├── __init__.py
@@ -827,25 +1084,38 @@ SnapShelf-console/
 │   ├── evaluate_runner.py           # Orchestrator: runs pipelines on test set
 │   ├── report.py                    # Comparison tables, bar charts, LaTeX output
 │   ├── vlm_comparison.py           # 3-model VLM comparison runner
-│   └── generate_degradations.py    # D1/D2/D3 image degradation generator
+│   ├── generate_degradations.py    # D1/D2/D3 image degradation generator
+│   └── generate_charts.py          # Cross-condition visualizations
 │
 ├── data/                             # YOLO training configs
 │   ├── yolo_14class.yaml            # nc=14, 14 class names
 │   └── yolo_objectness.yaml         # nc=1, class="object"
 │
+├── docs/                             # Documentation assets (git-tracked)
+│   └── figures/                     # Key charts for README + dissertation
+│       ├── f1_degradation_lines.png
+│       ├── f1_delta_degradation.png
+│       ├── latency_vs_f1_scatter.png
+│       ├── perclass_f1_bars_clean.png
+│       ├── perclass_f1_heatmap_clean.png
+│       ├── perclass_f1_heatmap_all.png
+│       ├── yolo-14_confusion.png
+│       ├── vlm_confusion.png
+│       └── yolo-cnn_confusion.png
+│
 ├── dataset_exp2/                     # Experiment 2 test data
 │   ├── images/                      # 120 clean test images
 │   ├── labels/                      # 120 YOLO annotation files
-│   ├── images_d1_blur/              # 120 blurred images
-│   ├── images_d2_noise/             # 120 noisy images
-│   └── images_d3_jpeg/              # 120 JPEG-compressed images
+│   ├── images_d1_blur/              # 120 blurred images (gitignored, regenerable)
+│   ├── images_d2_noise/             # 120 noisy images (gitignored, regenerable)
+│   └── images_d3_jpeg/              # 120 JPEG-compressed images (gitignored, regenerable)
 │
-├── dataset/                          # 14-class training data (from remap)
+├── dataset/                          # 14-class training data (gitignored)
 │   ├── train/images/ + labels/      # ~19,356 images
 │   ├── val/images/ + labels/        # ~2,602 images
 │   └── test/images/ + labels/       # ~1,882 images
 │
-├── dataset_objectness/               # Objectness training data (class IDs = 0)
+├── dataset_objectness/               # Objectness training data (gitignored)
 │   ├── train/images/ + labels/
 │   ├── val/images/ + labels/
 │   └── test/images/ + labels/
@@ -853,14 +1123,16 @@ SnapShelf-console/
 ├── weights/                          # Trained model weights (gitignored)
 │   ├── yolo_14class_best.pt         # Pipeline B
 │   ├── yolo_objectness_best.pt      # Pipeline C (detection)
-│   └── cnn_winner.keras               # Pipeline C (classification)
+│   └── cnn_winner.keras             # Pipeline C (classification, from Exp 1)
 │
 ├── results/                          # Evaluation outputs (gitignored)
 │   ├── vlm_comparison/              # 3-model VLM comparison results
-│   ├── clean/                       # 12-run: clean condition
-│   ├── d1_blur/                     # 12-run: blur condition
-│   ├── d2_noise/                    # 12-run: noise condition
-│   └── d3_jpeg/                     # 12-run: JPEG condition
+│   ├── clean/                       # Clean condition results
+│   ├── d1_blur/                     # Blur condition results
+│   ├── d2_noise/                    # Noise condition results
+│   ├── d3_jpeg/                     # JPEG condition results
+│   ├── charts/                      # Cross-condition visualizations
+│   └── pipeline_comparison/         # Alternative output directory
 │
 └── logs/                             # JSONL experiment logs (gitignored)
 ```
@@ -879,6 +1151,10 @@ Ready-to-adapt paragraphs for your dissertation report:
 
 > *"Experiment 2 evaluates three end-to-end pipelines on an identical test set of 120 photographs, each containing 2–8 items from a 14-class fruit and vegetable taxonomy. Pipeline A uses GPT-5.2 (OpenAI), selected through a three-model VLM comparison that also evaluated Gemini 3.1 Pro and Claude Opus 4.6, with a constrained prompt restricting output to the 14 target classes. Pipeline B uses a YOLOv8s object detector fine-tuned to directly predict all 14 classes. Pipeline C uses a two-stage approach: a YOLOv8s model trained as a class-agnostic objectness detector to localise items, followed by an EfficientNet-B0 classifier (the winning model from Experiment 1) to classify each cropped region."*
 
+### Results Summary
+
+> *"Pipeline A (VLM, GPT-5.2) achieved the highest micro-averaged F1 score of 0.8995 on clean images, significantly outperforming Pipeline B (YOLO-14, F1=0.6031) and Pipeline C (YOLO+CNN, F1=0.5470). This advantage was maintained across all degradation conditions: under Gaussian blur (F1=0.8952 vs 0.6545 vs 0.4947), Gaussian noise (F1=0.8778 vs 0.2528 vs 0.3673), and JPEG compression (F1=0.8660 vs 0.5116 vs 0.5171). The VLM demonstrated exceptional robustness, with a maximum F1 drop of just 0.033 across all degradations, compared to 0.350 for YOLO-14 and 0.180 for YOLO+CNN. However, this accuracy came at a cost: the VLM's average inference latency ranged from 2.3 to 10.7 seconds per image, compared to 172–508 ms for YOLO-14 and 931–1,340 ms for YOLO+CNN. The VLM also incurred an API cost of approximately $0.004 per image, while the offline pipelines were free."*
+
 ### Training/Test Separation
 
 > *"To ensure a fair comparison, training and test data were strictly separated. Pipelines B and C were fine-tuned on the publicly available Combined Vegetables & Fruits dataset (Roboflow Universe, ~42,000 images, 47 classes), remapped to the 14-class taxonomy used in this study (see Section X). The test set comprised 120 original photographs taken by the author across five real-world settings, annotated independently in Roboflow and never used during training. Pipeline A (GPT-5.2) was used as-is without fine-tuning; while we cannot guarantee our test images were absent from its internet-scale training corpus, this reflects the realistic deployment scenario for a zero-shot VLM."*
@@ -893,7 +1169,7 @@ Ready-to-adapt paragraphs for your dissertation report:
 
 ### Cost and Latency Trade-Offs
 
-> *"API costs and inference latency were recorded for all three VLMs. GPT-5.2 was the fastest (3.7 s/image) and cheapest ($0.004/image), while Gemini 3.1 Pro was the slowest (9.0 s/image) and most expensive ($0.010/image) due to internal thinking tokens billed as output. Claude Opus 4.6 occupied the middle ground (4.7 s/image, $0.012/image). The total API cost for the VLM comparison across all three models on 120 images was $4.38. Pipelines B and C, being fully offline, incurred zero API cost and sub-100 ms inference on GPU, making them significantly cheaper at scale. For a production deployment processing 10,000 images/day, Pipeline A (GPT-5.2) would cost approximately $40/day versus $0 for the YOLO-based pipelines, plus the added latency of network round-trips."*
+> *"API costs and inference latency were recorded for all three VLMs. GPT-5.2 was the fastest (3.7 s/image) and cheapest ($0.004/image), while Gemini 3.1 Pro was the slowest (9.0 s/image) and most expensive ($0.010/image) due to internal thinking tokens billed as output. Claude Opus 4.6 occupied the middle ground (4.7 s/image, $0.012/image). The total API cost for the VLM comparison across all three models on 120 images was $4.38. Pipelines B and C, being fully offline, incurred zero API cost and sub-second inference, making them significantly cheaper at scale. For a production deployment processing 10,000 images/day, Pipeline A (GPT-5.2) would cost approximately $40/day versus $0 for the YOLO-based pipelines, plus the added latency of network round-trips."*
 
 ### Limitations
 
@@ -909,7 +1185,7 @@ Ready-to-adapt paragraphs for your dissertation report:
 | RAM | 8 GB minimum (16 GB recommended for training) |
 | Disk | ~2 GB (models + datasets) |
 | GPU | Recommended for training (Colab T4 alternative provided) |
-| Network | Required for Pipeline A (Google API) and VLM comparison |
+| Network | Required for Pipeline A (OpenAI API) and VLM comparison |
 
 ## Acknowledgements
 
@@ -917,5 +1193,6 @@ Ready-to-adapt paragraphs for your dissertation report:
 - [OpenAI](https://openai.com) for GPT-5.2 API (Pipeline A)
 - [Google](https://ai.google.dev/) for Gemini 3.1 Pro API (VLM comparison)
 - [Anthropic](https://anthropic.com) for Claude Opus 4.6 API (VLM comparison)
-- [PyTorch](https://pytorch.org) for CNN training and inference
+- [TensorFlow/Keras](https://www.tensorflow.org/) for CNN inference (Pipeline C)
+- [PyTorch](https://pytorch.org) for CNN training and alternative inference
 - [Roboflow](https://roboflow.com) for annotation tools and training datasets
