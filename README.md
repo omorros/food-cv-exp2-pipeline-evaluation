@@ -26,8 +26,8 @@ flowchart LR
 | Pipeline | How it works | Weights |
 |----------|-------------|---------|
 | A (VLM) | Send image to GPT-5.2, parse structured output | API call, no local weights |
-| B (YOLO-14) | 14-class YOLOv11n detection | `yolo_14class_best.pt` (22.5 MB) |
-| C (YOLO+CNN) | 1-class objectness YOLOv11n + EfficientNetB0 classifier from [Exp 1](https://github.com/omorros/food-cv-exp1-cnn-comparison) | `yolo_objectness_best.pt` + `cnn_winner.keras` |
+| B (YOLO-14) | 14-class YOLOv8s detection | `yolo_14class_best.pt` (22.5 MB) |
+| C (YOLO+CNN) | 1-class objectness YOLOv8s + EfficientNetB0 classifier from [Exp 1](https://github.com/omorros/food-cv-exp1-cnn-comparison) | `yolo_objectness_best.pt` + `cnn_winner.keras` |
 
 ## VLM Model Selection (Pipeline A)
 
@@ -49,9 +49,9 @@ To test robustness, three degradation conditions were generated from the same 12
 
 ```mermaid
 flowchart LR
-    O["120 clean images"] --> D1["D1: Gaussian blur\nkernel=15, sigma=5"]
-    O --> D2["D2: Gaussian noise\nsigma=25"]
-    O --> D3["D3: JPEG compression\nquality=10"]
+    O["120 clean images"] --> D1["D1: Gaussian blur\nkernel=15, sigma=6.0"]
+    O --> D2["D2: Gaussian noise\nsigma=50"]
+    O --> D3["D3: JPEG compression\nquality=5"]
 ```
 
 This produces a 12-run matrix: 3 pipelines x 4 conditions (clean + 3 degradations).
@@ -138,7 +138,7 @@ This produces a 12-run matrix: 3 pipelines x 4 conditions (clean + 3 degradation
 │   └── vlm_comparison.py            # Multi-VLM benchmark
 │
 ├── training/                        # YOLO training
-│   ├── Train_YOLO_Models.ipynb      # Colab notebook (T4 GPU)
+│   ├── Train_YOLO_Models.ipynb      # Colab notebook (L4 GPU)
 │   ├── train_yolo_14class.py        # 14-class training script
 │   ├── train_yolo_objectness.py     # Objectness training script
 │   ├── remap_classes.py             # Dataset class remapping
@@ -184,7 +184,7 @@ cp .env.example .env  # add OPENAI_API_KEY for Pipeline A
 
 ### 2. Training (YOLO models)
 
-Both YOLO models trained on Google Colab with Tesla T4. Open `training/Train_YOLO_Models.ipynb` and run all cells. Alternatively:
+Both YOLO models fine-tuned from `yolov8s.pt` (COCO pretrained) on Google Colab with NVIDIA L4. Training dataset (~19,356 train / 2,602 val images, 14 classes) sourced via [Roboflow](https://roboflow.com). Open `training/Train_YOLO_Models.ipynb` and run all cells. Alternatively:
 
 ```bash
 python main.py train yolo-14     # 14-class YOLO
